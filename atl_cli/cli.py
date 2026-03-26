@@ -1,0 +1,497 @@
+import json
+import sys
+
+import click
+
+from .auth import CREDS_PATH, load_credentials, save_credentials
+from .client import (
+    confluence_page_create,
+    confluence_page_get,
+    confluence_page_update,
+    confluence_pages_in_space,
+    confluence_recent,
+    confluence_search,
+    confluence_spaces,
+    jira_assign,
+    jira_comment,
+    jira_create,
+    jira_find_user,
+    jira_get,
+    jira_myself,
+    jira_projects,
+    jira_search,
+    jira_transition,
+)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _json(data) -> None:
+    click.echo(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def _adf_to_text(adf: dict | None) -> str:
+    """Extract plain text from an Atlassian Document Format dict."""
+    if not adf or not isinstance(adf, dict):
+        return ""
+
+    def _walk(node: dict) -> str:
+        if node.get("type") == "text":
+            return node.get("text", "")
+        parts = [_walk(child) for child in node.get("content", [])]
+        joined = "".join(parts)
+        if node.get("type") in ("paragraph", "heading", "listItem", "blockquote"):
+            return joined + "\n"
+        return joined
+
+    return _walk(adf).strip()
+
+
+def _read_body(body: str | None, file: str | None) -> str | None:
+    """Read body content from --body or --file, preferring --file."""
+    if file:
+        with open(file) as f:
+            return f.read()
+    return body
+
+
+# ── CLI Root ──────────────────────────────────────────────────────────────────
+
+@click.group()
+def cli():
+    """Atlassian CLI — interact with Jira and Confluence from the terminal."""
+
+
+# ── auth ──────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def auth():
+    """Manage authentication."""
+
+
+@auth.command("setup")
+def auth_setup():
+    """Configure and verify your Atlassian credentials.
+
+    \b
+    You need:
+      - Your Atlassian account email
+      - An API token from https://id.atlassian.com/manage-profile/security/api-tokens
+      - Your Atlassian domain (e.g. gdcgroup.atlassian.net)
+    """
+    email = click.prompt("Atlassian email")
+    token = click.prompt("API token", hide_input=True)
+    domain = click.prompt("Atlassian domain", default="gdcgroup.atlassian.net")
+
+    # Save preliminary credentials so the client can use them for verification
+    save_credentials(email, token, domain)
+
+    click.echo("\nVerifying credentials...")
+    try:
+        me = jira_myself()
+    except Exception as e:
+        click.echo(f"Verification failed: {e}", err=True)
+        click.echo("Check your email, token, and domain — then run: atl auth setup", err=True)
+        sys.exit(1)
+
+    click.echo(f"\nSaved to {CREDS_PATH}")
+    click.echo(f"  Account:  {me.get('displayName', '?')} ({me.get('emailAddress', '?')})")
+    click.echo(f"  Domain:   {domain}")
+    click.echo(f"  Account ID: {me.get('accountId', '?')}")
+
+
+@auth.command("status")
+def auth_status():
+    """Show stored credentials and verify they are still valid."""
+    creds = load_credentials()
+    click.echo(f"Email:   {creds['email']}")
+    click.echo(f"Domain:  {creds['domain']}")
+    click.echo(f"Token:   {creds['token'][:12]}...")
+    click.echo("\nVerifying live session...")
+    try:
+        me = jira_myself()
+        click.echo(f"Session: valid ({me.get('displayName', '?')})")
+    except Exception as e:
+        click.echo(f"Session: INVALID ({e})")
+        click.echo("Run: atl auth setup")
+
+
+# ── jira ──────────────────────────────────────────────────────────────────────
+
+@cli.group()
+def jira():
+    """Jira issue management."""
+
+
+@jira.command("view")
+@click.argument("key")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_view(key, as_json):
+    """View a Jira issue.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-123
+    """
+    issue = jira_get(key)
+    if as_json:
+        _json(issue)
+        return
+
+    fields = issue.get("fields", {})
+    summary = fields.get("summary", "")
+    status = fields.get("status", {}).get("name", "?")
+    issuetype = fields.get("issuetype", {}).get("name", "?")
+    assignee = (fields.get("assignee") or {}).get("displayName", "Unassigned")
+    priority = (fields.get("priority") or {}).get("name", "?")
+    creds = load_credentials()
+    url = f"https://{creds['domain']}/browse/{issue['key']}"
+
+    description_adf = fields.get("description")
+    description = _adf_to_text(description_adf) if description_adf else ""
+
+    click.echo(f"{issue['key']}  [{issuetype}]  {status}")
+    click.echo(f"Summary:    {summary}")
+    click.echo(f"Assignee:   {assignee}")
+    click.echo(f"Priority:   {priority}")
+    click.echo(f"URL:        {url}")
+    if description:
+        click.echo(f"\nDescription:")
+        for line in description.splitlines():
+            click.echo(f"  {line}")
+
+
+@jira.command("search")
+@click.option("--jql", required=True, help="JQL query string")
+@click.option("--limit", default=20, show_default=True, help="Max results to return")
+@click.option("--fields", default=None, help="Comma-separated fields (e.g. key,summary,status)")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_search_cmd(jql, limit, fields, as_json):
+    """Search Jira issues using JQL.
+
+    \b
+    Examples:
+      atl jira search --jql "project = WEBDATA AND status = 'In Progress'"
+      atl jira search --jql "assignee = currentUser() ORDER BY updated DESC" --limit 10
+    """
+    field_list = [f.strip() for f in fields.split(",")] if fields else None
+    issues = jira_search(jql, fields=field_list, limit=limit)
+    if as_json:
+        _json(issues)
+        return
+    if not issues:
+        click.echo("No issues found.")
+        return
+    for issue in issues:
+        f = issue.get("fields", {})
+        status = f.get("status", {}).get("name", "?")
+        issuetype = f.get("issuetype", {}).get("name", "?")
+        summary = f.get("summary", "")
+        click.echo(f"{issue['key']:<16}  {status:<16}  {issuetype:<12}  {summary}")
+
+
+@jira.command("create")
+@click.option("--project", required=True, help="Project key (e.g. WEBDATA)")
+@click.option("--type", "issuetype", default="Task", show_default=True, help="Issue type")
+@click.option("--summary", required=True, help="Issue summary / title")
+@click.option("--description", "description", default=None, help="Issue description (plain text)")
+@click.option("--description-file", "description_file", default=None, help="Read description from file")
+@click.option("--assignee", default=None, help="Assignee email address")
+@click.option("--reporter", default=None, help="Reporter email address")
+@click.option("--priority", default=None, help="Priority (e.g. High, Medium, Low)")
+@click.option("--label", "labels", default=None, help="Comma-separated labels (e.g. bug,cli)")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_create_cmd(project, issuetype, summary, description, description_file,
+                    assignee, reporter, priority, labels, as_json):
+    """Create a new Jira issue."""
+    desc = _read_body(description, description_file)
+    label_list = [l.strip() for l in labels.split(",")] if labels else []
+    issue = jira_create(
+        project=project,
+        issuetype=issuetype,
+        summary=summary,
+        description=desc,
+        assignee_email=assignee,
+        reporter_email=reporter,
+        priority=priority,
+        labels=label_list,
+    )
+    if as_json:
+        _json(issue)
+        return
+    creds = load_credentials()
+    key = issue.get("key", "?")
+    url = f"https://{creds['domain']}/browse/{key}"
+    click.echo(f"Created: {key}")
+    click.echo(f"URL:     {url}")
+
+
+@jira.command("comment")
+@click.argument("key")
+@click.argument("text", default="")
+@click.option("--file", "file", default=None, help="Read comment body from file")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_comment_cmd(key, text, file, as_json):
+    """Add a comment to a Jira issue.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-123
+    TEXT is the comment body (or use --file)
+    """
+    body = _read_body(text or None, file)
+    if not body:
+        click.echo("Provide comment text as argument or via --file.", err=True)
+        sys.exit(1)
+    result = jira_comment(key, body)
+    if as_json:
+        _json(result)
+        return
+    click.echo(f"Comment added to {key} (id: {result.get('id', '?')})")
+
+
+@jira.command("transition")
+@click.argument("key")
+@click.option("--status", "status_name", required=True, help="Target status name (e.g. 'In Progress')")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_transition_cmd(key, status_name, as_json):
+    """Transition a Jira issue to a new status.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-123
+    """
+    jira_transition(key, status_name)
+    if not as_json:
+        click.echo(f"{key} transitioned to '{status_name}'")
+    else:
+        _json({"key": key, "status": status_name})
+
+
+@jira.command("assign")
+@click.argument("key")
+@click.option("--to", "email", required=True, help="Assignee email address")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_assign_cmd(key, email, as_json):
+    """Assign a Jira issue to a user.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-123
+    """
+    jira_assign(key, email)
+    if not as_json:
+        click.echo(f"{key} assigned to {email}")
+    else:
+        _json({"key": key, "assignee": email})
+
+
+@jira.command("projects")
+@click.option("--limit", default=30, show_default=True, help="Max projects to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_projects_cmd(limit, as_json):
+    """List available Jira projects."""
+    projects = jira_projects(limit=limit)
+    if as_json:
+        _json(projects)
+        return
+    if not projects:
+        click.echo("No projects found.")
+        return
+    for p in projects:
+        key = p.get("key", "?")
+        name = p.get("name", "?")
+        ptype = p.get("projectTypeKey", "?")
+        click.echo(f"{key:<16}  {ptype:<12}  {name}")
+
+
+# ── confluence ────────────────────────────────────────────────────────────────
+
+@cli.group()
+def confluence():
+    """Confluence space and page management."""
+
+
+@confluence.command("spaces")
+@click.option("--limit", default=50, show_default=True, help="Max spaces to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_spaces_cmd(limit, as_json):
+    """List Confluence spaces."""
+    spaces = confluence_spaces(limit=limit)
+    if as_json:
+        _json(spaces)
+        return
+    if not spaces:
+        click.echo("No spaces found.")
+        return
+    for s in spaces:
+        key = s.get("key", "?")
+        name = s.get("name", "?")
+        space_id = s.get("id", "?")
+        click.echo(f"{key:<20}  {str(space_id):<12}  {name}")
+
+
+@confluence.command("search")
+@click.argument("query")
+@click.option("--limit", default=10, show_default=True, help="Max results to return")
+@click.option("--space", "space_key", default=None, help="Restrict to a space key (e.g. WEBANALYTICS)")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_search_cmd(query, limit, space_key, as_json):
+    """Search Confluence pages and content.
+
+    \b
+    QUERY is a plain text search term. It is automatically wrapped in a CQL
+    fulltext query. Use --space to restrict to a single space.
+    """
+    cql = f'text ~ "{query}"'
+    if space_key:
+        cql += f' AND space.key = "{space_key}"'
+    cql += " ORDER BY lastModified DESC"
+    results = confluence_search(cql, limit=limit)
+    if as_json:
+        _json(results)
+        return
+    if not results:
+        click.echo("No results.")
+        return
+    creds = load_credentials()
+    for r in results:
+        title = r.get("title", "?")
+        space = r.get("space", {}).get("key", "?")
+        page_id = r.get("id", "")
+        date = (r.get("history", {}).get("lastUpdated", {}) or {}).get("when", "")[:10]
+        url = f"https://{creds['domain']}/wiki{r.get('_links', {}).get('webui', '')}"
+        click.echo(f"{date}  [{space:<16}]  {title}")
+        click.echo(f"             {url}")
+
+
+@confluence.command("recent")
+@click.option("--limit", default=15, show_default=True, help="Max results to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_recent_cmd(limit, as_json):
+    """Show pages you have recently worked on."""
+    results = confluence_recent(limit=limit)
+    if as_json:
+        _json(results)
+        return
+    if not results:
+        click.echo("No recent pages found.")
+        return
+    creds = load_credentials()
+    for r in results:
+        title = r.get("title", "?")
+        space = r.get("space", {}).get("key", "?")
+        date = (r.get("history", {}).get("lastUpdated", {}) or {}).get("when", "")[:10]
+        url = f"https://{creds['domain']}/wiki{r.get('_links', {}).get('webui', '')}"
+        click.echo(f"{date}  [{space:<16}]  {title}")
+        click.echo(f"             {url}")
+
+
+@confluence.command("pages")
+@click.option("--space", "space_id", required=True, help="Space ID (numeric, from 'atl confluence spaces')")
+@click.option("--limit", default=50, show_default=True, help="Max pages to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_pages_cmd(space_id, limit, as_json):
+    """List pages in a Confluence space.
+
+    \b
+    Use 'atl confluence spaces' to find space IDs.
+    """
+    pages = confluence_pages_in_space(space_id, limit=limit)
+    if as_json:
+        _json(pages)
+        return
+    if not pages:
+        click.echo("No pages found.")
+        return
+    for p in pages:
+        page_id = p.get("id", "?")
+        title = p.get("title", "?")
+        status = p.get("status", "?")
+        click.echo(f"{str(page_id):<16}  {status:<12}  {title}")
+
+
+@confluence.group("page")
+def confluence_page():
+    """View and manage individual Confluence pages."""
+
+
+@confluence_page.command("view")
+@click.argument("page_id")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_page_view(page_id, as_json):
+    """View a Confluence page by ID."""
+    page = confluence_page_get(page_id)
+    if as_json:
+        _json(page)
+        return
+    title = page.get("title", "?")
+    status = page.get("status", "?")
+    version = page.get("version", {}).get("number", "?")
+    space_key = page.get("spaceId", "?")
+    creds = load_credentials()
+    url = f"https://{creds['domain']}/wiki/spaces/{space_key}/pages/{page_id}"
+
+    body_value = page.get("body", {}).get("storage", {}).get("value", "")
+
+    click.echo(f"{title}")
+    click.echo(f"Status:   {status}")
+    click.echo(f"Version:  {version}")
+    click.echo(f"URL:      {url}")
+    if body_value:
+        click.echo(f"\nBody (storage format):")
+        # Print first 80 chars per line to avoid overwhelming terminal
+        for line in body_value.splitlines()[:40]:
+            click.echo(f"  {line[:120]}")
+
+
+@confluence_page.command("create")
+@click.option("--space", "space_id", required=True, help="Space ID (numeric)")
+@click.option("--title", required=True, help="Page title")
+@click.option("--body", "body", default=None, help="Page body (Confluence storage XHTML)")
+@click.option("--file", "file", default=None, help="Read body from file")
+@click.option("--parent", "parent_id", default=None, help="Parent page ID")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_page_create_cmd(space_id, title, body, file, parent_id, as_json):
+    """Create a new Confluence page."""
+    content = _read_body(body, file)
+    if not content:
+        click.echo("Provide page body via --body or --file.", err=True)
+        sys.exit(1)
+    page = confluence_page_create(
+        space_id=space_id,
+        title=title,
+        body=content,
+        parent_id=parent_id,
+    )
+    if as_json:
+        _json(page)
+        return
+    creds = load_credentials()
+    pid = page.get("id", "?")
+    click.echo(f"Created page: {pid}")
+    click.echo(f"Title:  {title}")
+    click.echo(f"URL:    https://{creds['domain']}/wiki/spaces/{space_id}/pages/{pid}")
+
+
+@confluence_page.command("update")
+@click.argument("page_id")
+@click.option("--title", required=True, help="Page title (required even if unchanged)")
+@click.option("--body", "body", default=None, help="New page body (Confluence storage XHTML)")
+@click.option("--file", "file", default=None, help="Read body from file")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_page_update_cmd(page_id, title, body, file, as_json):
+    """Update an existing Confluence page.
+
+    \b
+    PAGE_ID is the numeric page ID.
+    Version is auto-incremented — no need to supply it manually.
+    """
+    content = _read_body(body, file)
+    if not content:
+        click.echo("Provide page body via --body or --file.", err=True)
+        sys.exit(1)
+    page = confluence_page_update(page_id=page_id, title=title, body=content)
+    if as_json:
+        _json(page)
+        return
+    new_version = page.get("version", {}).get("number", "?")
+    click.echo(f"Updated page: {page_id}")
+    click.echo(f"Title:   {title}")
+    click.echo(f"Version: {new_version}")
