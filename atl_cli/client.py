@@ -1,3 +1,5 @@
+import re
+
 import requests
 
 from .auth import load_credentials
@@ -48,18 +50,179 @@ def jira_myself() -> dict:
 
 # ── ADF helper ────────────────────────────────────────────────────────────────
 
-def _text_to_adf(text: str) -> dict:
-    """Convert a plain text string to Atlassian Document Format (ADF)."""
-    return {
-        "type": "doc",
-        "version": 1,
-        "content": [
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": text}],
+_INLINE_RE = re.compile(r"(\*\*(.+?)\*\*|(?<!\w)_(.+?)_(?!\w)|`(.+?)`|\[([^\]]+)\]\(([^)]+)\))")
+
+
+def _inline_adf(line: str) -> list[dict]:
+    """Parse a single line of text into a list of ADF inline text nodes.
+
+    Recognises **bold**, _italic_, `code`, and [label](url) spans. All other
+    text is emitted as plain text nodes. Spans are processed left-to-right;
+    overlapping or nested spans are not supported.
+
+    Args:
+        line: A single line of markdown text.
+
+    Returns:
+        A list of ADF text node dicts suitable for use inside a paragraph or
+        heading ``content`` array.
+    """
+    nodes: list[dict] = []
+    cursor = 0
+    for m in _INLINE_RE.finditer(line):
+        # Emit any literal text that precedes this match
+        if m.start() > cursor:
+            nodes.append({"type": "text", "text": line[cursor : m.start()]})
+        raw = m.group(0)
+        if raw.startswith("**"):
+            nodes.append({
+                "type": "text",
+                "text": m.group(2),
+                "marks": [{"type": "strong"}],
+            })
+        elif raw.startswith("_"):
+            nodes.append({
+                "type": "text",
+                "text": m.group(3),
+                "marks": [{"type": "em"}],
+            })
+        elif raw.startswith("["):  # [label](url)
+            nodes.append({
+                "type": "text",
+                "text": m.group(5),
+                "marks": [{"type": "link", "attrs": {"href": m.group(6)}}],
+            })
+        else:  # backtick inline code
+            nodes.append({
+                "type": "text",
+                "text": m.group(4),
+                "marks": [{"type": "code"}],
+            })
+        cursor = m.end()
+    # Remaining literal text after the last match
+    if cursor < len(line):
+        nodes.append({"type": "text", "text": line[cursor:]})
+    # Guarantee at least one node so callers never receive an empty content list
+    if not nodes:
+        nodes.append({"type": "text", "text": ""})
+    return nodes
+
+
+def _markdown_to_adf(text: str) -> dict:
+    """Convert a markdown string to Atlassian Document Format (ADF).
+
+    Supported markdown elements:
+
+    * ``# H1`` / ``## H2`` / ``### H3`` — heading nodes with ``attrs.level``
+    * ``- item`` / ``* item`` — bulletList > listItem > paragraph
+    * ``**bold**`` — strong mark
+    * ``_italic_`` — em mark
+    * `` `code` `` (inline) — code mark
+    * Fenced code blocks (``` ... ```) — codeBlock node
+    * Blank-line-separated text — separate paragraph nodes
+
+    Inline marks (**bold**, _italic_, `code`) are also parsed inside headings
+    and list items.
+
+    Args:
+        text: A markdown-formatted string.
+
+    Returns:
+        A complete ADF document dict with ``type``, ``version``, and
+        ``content`` keys.
+    """
+    if not text:
+        return {"type": "doc", "version": 1, "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": ""}]}
+        ]}
+
+    content: list[dict] = []
+    lines = text.splitlines()
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+
+        # ── fenced code block ─────────────────────────────────────────────────
+        if line.strip().startswith("```"):
+            lang = line.strip()[3:].strip()  # optional language hint
+            code_lines: list[str] = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            node: dict = {
+                "type": "codeBlock",
+                "content": [{"type": "text", "text": "\n".join(code_lines)}],
             }
-        ],
-    }
+            if lang:
+                node["attrs"] = {"language": lang}
+            content.append(node)
+            i += 1  # skip closing ```
+            continue
+
+        # ── heading ───────────────────────────────────────────────────────────
+        heading_match = re.match(r"^(#{1,3})\s+(.*)", line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            heading_text = heading_match.group(2)
+            content.append({
+                "type": "heading",
+                "attrs": {"level": level},
+                "content": _inline_adf(heading_text),
+            })
+            i += 1
+            continue
+
+        # ── bullet list ───────────────────────────────────────────────────────
+        if re.match(r"^[-*]\s+", line):
+            list_items: list[dict] = []
+            while i < len(lines) and re.match(r"^[-*]\s+", lines[i]):
+                item_text = re.sub(r"^[-*]\s+", "", lines[i])
+                list_items.append({
+                    "type": "listItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": _inline_adf(item_text),
+                    }],
+                })
+                i += 1
+            content.append({"type": "bulletList", "content": list_items})
+            continue
+
+        # ── blank line — paragraph separator, skip ────────────────────────────
+        if line.strip() == "":
+            i += 1
+            continue
+
+        # ── paragraph — collect consecutive non-blank, non-special lines ──────
+        para_lines: list[str] = []
+        while (
+            i < len(lines)
+            and lines[i].strip() != ""
+            and not lines[i].strip().startswith("```")
+            and not re.match(r"^(#{1,3})\s+", lines[i])
+            and not re.match(r"^[-*]\s+", lines[i])
+        ):
+            para_lines.append(lines[i])
+            i += 1
+
+        if para_lines:
+            # Join lines with a space and parse inline marks
+            para_text = " ".join(para_lines)
+            content.append({
+                "type": "paragraph",
+                "content": _inline_adf(para_text),
+            })
+
+    # If nothing was produced (e.g. only blank lines), emit an empty paragraph
+    if not content:
+        content.append({
+            "type": "paragraph",
+            "content": [{"type": "text", "text": ""}],
+        })
+
+    return {"type": "doc", "version": 1, "content": content}
 
 
 # ── Jira — Users ──────────────────────────────────────────────────────────────
@@ -101,7 +264,7 @@ def jira_create(
         "summary": summary,
     }
     if description:
-        fields["description"] = _text_to_adf(description)
+        fields["description"] = _markdown_to_adf(description)
     if assignee_email:
         user = jira_find_user(assignee_email)
         fields["assignee"] = {"accountId": user["accountId"]}
@@ -128,7 +291,7 @@ def jira_search(jql: str, fields: list[str] | None = None, limit: int = 20) -> l
 
 def jira_comment(key: str, body: str) -> dict:
     """Add a comment to a Jira issue."""
-    payload = {"body": _text_to_adf(body)}
+    payload = {"body": _markdown_to_adf(body)}
     return _jira("POST", f"issue/{key}/comment", json=payload).json()
 
 
@@ -158,6 +321,56 @@ def jira_projects(limit: int = 50) -> list[dict]:
     """List Jira projects."""
     r = _jira("GET", "project/search", params={"maxResults": limit})
     return r.json().get("values", [])
+
+
+def jira_update(
+    key: str,
+    summary: str | None = None,
+    description: str | None = None,
+    priority: str | None = None,
+    labels: list[str] | None = None,
+) -> None:
+    """Update fields on an existing Jira issue using PUT /rest/api/3/issue/{key}."""
+    fields: dict = {}
+    if summary is not None:
+        fields["summary"] = summary
+    if description is not None:
+        fields["description"] = _markdown_to_adf(description)
+    if priority is not None:
+        fields["priority"] = {"name": priority}
+    if labels is not None:
+        fields["labels"] = labels
+    if not fields:
+        raise ValueError("No fields specified to update.")
+    _jira("PUT", f"issue/{key}", json={"fields": fields})
+
+
+def jira_comment_update(key: str, comment_id: str, body: str) -> dict:
+    """Update an existing comment using PUT /rest/api/3/issue/{key}/comment/{commentId}."""
+    payload = {"body": _markdown_to_adf(body)}
+    return _jira("PUT", f"issue/{key}/comment/{comment_id}", json=payload).json()
+
+
+def jira_comment_delete(key: str, comment_id: str) -> None:
+    """Delete a comment using DELETE /rest/api/3/issue/{key}/comment/{commentId}."""
+    _jira("DELETE", f"issue/{key}/comment/{comment_id}")
+
+
+def jira_link_issues(inward_key: str, outward_key: str, link_type: str) -> None:
+    """Link two issues using POST /rest/api/3/issueLink."""
+    payload = {
+        "type": {"name": link_type},
+        "inwardIssue": {"key": inward_key},
+        "outwardIssue": {"key": outward_key},
+    }
+    try:
+        _jira("POST", "issueLink", json=payload)
+    except RuntimeError as exc:
+        r = _jira("GET", "issueLinkType")
+        available = ", ".join(t["name"] for t in r.json().get("issueLinkTypes", []))
+        raise ValueError(
+            f"Link type '{link_type}' not found. Available: {available}"
+        ) from exc
 
 
 # ── Confluence — helpers ───────────────────────────────────────────────────────

@@ -14,13 +14,17 @@ from .client import (
     confluence_spaces,
     jira_assign,
     jira_comment,
+    jira_comment_delete,
+    jira_comment_update,
     jira_create,
     jira_find_user,
     jira_get,
+    jira_link_issues,
     jira_myself,
     jira_projects,
     jira_search,
     jira_transition,
+    jira_update,
 )
 
 
@@ -193,8 +197,8 @@ def jira_search_cmd(jql, limit, fields, as_json):
 @click.option("--project", required=True, help="Project key (e.g. WEBDATA)")
 @click.option("--type", "issuetype", default="Task", show_default=True, help="Issue type")
 @click.option("--summary", required=True, help="Issue summary / title")
-@click.option("--description", "description", default=None, help="Issue description (plain text)")
-@click.option("--description-file", "description_file", default=None, help="Read description from file")
+@click.option("--description", "description", default=None, help="Issue description. Supports markdown: **bold**, _italic_, `code`, # headings, - lists.")
+@click.option("--description-file", "description_file", default=None, help="Read description from a markdown file. Supports bold, italic, headings, lists, inline code.")
 @click.option("--assignee", default=None, help="Assignee email address")
 @click.option("--reporter", default=None, help="Reporter email address")
 @click.option("--priority", default=None, help="Priority (e.g. High, Medium, Low)")
@@ -225,10 +229,29 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
     click.echo(f"URL:     {url}")
 
 
+@jira.command("update")
+@click.argument("key")
+@click.option("--summary", default=None, help="New issue summary / title")
+@click.option("--description", default=None, help="New description (markdown)")
+@click.option("--description-file", "description_file", default=None, help="Read description from a markdown file")
+@click.option("--priority", default=None, help="New priority (e.g. High, Medium, Low)")
+@click.option("--label", "labels", default=None, help="Comma-separated labels (replaces existing)")
+@click.option("--json", "as_json", is_flag=True)
+def jira_update_cmd(key, summary, description, description_file, priority, labels, as_json):
+    """Update fields on an existing Jira issue."""
+    desc = _read_body(description, description_file)
+    label_list = [l.strip() for l in labels.split(",")] if labels else None
+    jira_update(key, summary=summary, description=desc, priority=priority, labels=label_list)
+    if as_json:
+        _json({"key": key, "updated": True})
+    else:
+        click.echo(f"{key} updated.")
+
+
 @jira.command("comment")
 @click.argument("key")
 @click.argument("text", default="")
-@click.option("--file", "file", default=None, help="Read comment body from file")
+@click.option("--file", "file", default=None, help="Read comment body from a markdown file. Supports bold, italic, headings, lists, inline code.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_comment_cmd(key, text, file, as_json):
     """Add a comment to a Jira issue.
@@ -246,6 +269,50 @@ def jira_comment_cmd(key, text, file, as_json):
         _json(result)
         return
     click.echo(f"Comment added to {key} (id: {result.get('id', '?')})")
+
+
+@jira.command("comment-update")
+@click.argument("key")
+@click.argument("comment_id")
+@click.argument("text", default="")
+@click.option("--file", "file", default=None, help="Read comment body from a markdown file")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_comment_update_cmd(key, comment_id, text, file, as_json):
+    """Edit an existing comment on a Jira issue.
+
+    \b
+    KEY        is the issue key, e.g. WEBDATA-123
+    COMMENT_ID is the numeric comment ID
+    TEXT       is the new comment body (or use --file)
+    """
+    body = _read_body(text or None, file)
+    if not body:
+        click.echo("Provide comment text as argument or via --file.", err=True)
+        sys.exit(1)
+    result = jira_comment_update(key, comment_id, body)
+    if as_json:
+        _json(result)
+    else:
+        click.echo(f"Comment {comment_id} on {key} updated.")
+
+
+@jira.command("comment-delete")
+@click.argument("key")
+@click.argument("comment_id")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_comment_delete_cmd(key, comment_id, as_json):
+    """Delete a comment from a Jira issue.
+
+    \b
+    KEY        is the issue key, e.g. WEBDATA-123
+    COMMENT_ID is the numeric comment ID
+    """
+    click.confirm(f"Delete comment {comment_id} from {key}? This cannot be undone.", abort=True)
+    jira_comment_delete(key, comment_id)
+    if as_json:
+        _json({"key": key, "comment_id": comment_id, "deleted": True})
+    else:
+        click.echo(f"Comment {comment_id} deleted from {key}.")
 
 
 @jira.command("transition")
@@ -280,6 +347,24 @@ def jira_assign_cmd(key, email, as_json):
         click.echo(f"{key} assigned to {email}")
     else:
         _json({"key": key, "assignee": email})
+
+
+@jira.command("link")
+@click.argument("key")
+@click.option("--to", "target_key", required=True, help="Key of the issue to link to (e.g. GDCU-8290)")
+@click.option("--type", "link_type", required=True, help='Link type name (e.g. "relates to", "is caused by")')
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_link_cmd(key, target_key, link_type, as_json):
+    """Link two Jira issues.
+
+    \b
+    KEY is the inward issue key, e.g. WEBDATA-928
+    """
+    jira_link_issues(key, target_key, link_type)
+    if as_json:
+        _json({"inward": key, "outward": target_key, "type": link_type})
+    else:
+        click.echo(f"Linked {key} -> {target_key} ({link_type})")
 
 
 @jira.command("projects")
