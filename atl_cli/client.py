@@ -233,16 +233,18 @@ def _markdown_to_adf(text: str) -> dict:
 # ── Jira — Users ──────────────────────────────────────────────────────────────
 
 def jira_find_user(email_or_name: str) -> dict:
-    """Find a Jira user by email or display name.
-
-    Uses GET /rest/api/3/user/search?query=... Returns the first match or raises
-    ValueError if none found.
-    """
+    """Find a Jira user by email or display name. Returns the first match."""
     r = _jira("GET", "user/search", params={"query": email_or_name})
     results = r.json()
     if not results:
         raise ValueError(f"No Jira user found matching '{email_or_name}'")
     return results[0]
+
+
+def jira_search_users(query: str, limit: int = 20) -> list[dict]:
+    """Search Jira users by name or email. Returns up to limit matches."""
+    r = _jira("GET", "user/search", params={"query": query, "maxResults": limit})
+    return r.json()
 
 
 # ── Jira — Issues ─────────────────────────────────────────────────────────────

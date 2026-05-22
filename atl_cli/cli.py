@@ -19,6 +19,7 @@ from .client import (
     jira_create,
     jira_find_user,
     jira_get,
+    jira_search_users,
     jira_link_issues,
     jira_myself,
     jira_projects,
@@ -365,6 +366,33 @@ def jira_link_cmd(key, target_key, link_type, as_json):
         _json({"inward": key, "outward": target_key, "type": link_type})
     else:
         click.echo(f"Linked {key} -> {target_key} ({link_type})")
+
+
+@jira.command("users")
+@click.argument("query")
+@click.option("--limit", default=20, show_default=True, help="Max results to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_users_cmd(query, limit, as_json):
+    """Search Jira users by name or email.
+
+    \b
+    QUERY is a name or email fragment, e.g. "mike" or "mike.pett@"
+
+    Output includes accountId (for @[Name](accountId) mentions), display name,
+    and email address.
+    """
+    users = jira_search_users(query, limit=limit)
+    if as_json:
+        _json(users)
+        return
+    if not users:
+        click.echo("No users found.")
+        return
+    for u in users:
+        account_id = u.get("accountId", "?")
+        name = u.get("displayName", "?")
+        email = u.get("emailAddress", "")
+        click.echo(f"{account_id}  {name:<30}  {email}")
 
 
 @jira.command("projects")
