@@ -252,7 +252,7 @@ def jira_update_cmd(key, summary, description, description_file, priority, label
 @jira.command("comment")
 @click.argument("key")
 @click.argument("text", default="")
-@click.option("--file", "file", default=None, help="Read comment body from a markdown file. Supports bold, italic, headings, lists, inline code.")
+@click.option("--file", "file", default=None, help="Read comment body from a markdown file. Supports bold, italic, headings, lists, inline code, and @[Name](accountId) mentions.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_comment_cmd(key, text, file, as_json):
     """Add a comment to a Jira issue.
@@ -276,7 +276,7 @@ def jira_comment_cmd(key, text, file, as_json):
 @click.argument("key")
 @click.argument("comment_id")
 @click.argument("text", default="")
-@click.option("--file", "file", default=None, help="Read comment body from a markdown file")
+@click.option("--file", "file", default=None, help="Read comment body from a markdown file. Supports bold, italic, headings, lists, inline code, and @[Name](accountId) mentions.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_comment_update_cmd(key, comment_id, text, file, as_json):
     """Edit an existing comment on a Jira issue.
