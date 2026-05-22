@@ -50,7 +50,7 @@ def jira_myself() -> dict:
 
 # ── ADF helper ────────────────────────────────────────────────────────────────
 
-_INLINE_RE = re.compile(r"(\*\*(.+?)\*\*|(?<!\w)_(.+?)_(?!\w)|`(.+?)`|\[([^\]]+)\]\(([^)]+)\))")
+_INLINE_RE = re.compile(r"(\*\*(.+?)\*\*|(?<!\w)_(.+?)_(?!\w)|`(.+?)`|@\[([^\]]+)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\))")
 
 
 def _inline_adf(line: str) -> list[dict]:
@@ -86,11 +86,16 @@ def _inline_adf(line: str) -> list[dict]:
                 "text": m.group(3),
                 "marks": [{"type": "em"}],
             })
+        elif raw.startswith("@["):  # @[Display Name](accountId) — Jira mention
+            nodes.append({
+                "type": "mention",
+                "attrs": {"id": m.group(6), "text": f"@{m.group(5)}"},
+            })
         elif raw.startswith("["):  # [label](url)
             nodes.append({
                 "type": "text",
-                "text": m.group(5),
-                "marks": [{"type": "link", "attrs": {"href": m.group(6)}}],
+                "text": m.group(7),
+                "marks": [{"type": "link", "attrs": {"href": m.group(8)}}],
             })
         else:  # backtick inline code
             nodes.append({
@@ -448,8 +453,10 @@ def confluence_page_update(page_id: str, title: str, body: str) -> dict:
     """Update an existing Confluence page. Automatically increments version number."""
     current = confluence_page_get(page_id)
     current_version = current.get("version", {}).get("number", 1)
+    current_status = current.get("status", "current")
     payload = {
         "id": page_id,
+        "status": current_status,
         "title": title,
         "version": {"number": current_version + 1},
         "body": {
