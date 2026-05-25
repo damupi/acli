@@ -22,6 +22,7 @@ from .client import (
     jira_search_users,
     jira_link_issues,
     jira_myself,
+    jira_watch,
     jira_projects,
     jira_search,
     jira_transition,
@@ -348,6 +349,27 @@ def jira_assign_cmd(key, email, as_json):
         click.echo(f"{key} assigned to {email}")
     else:
         _json({"key": key, "assignee": email})
+
+
+@jira.command("watch")
+@click.argument("key")
+@click.option("--user", "email", required=True, help="Watcher email address")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_watch_cmd(key, email, as_json):
+    """Add a watcher to a Jira issue.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-123
+    """
+    try:
+        jira_watch(key, email)
+    except (ValueError, RuntimeError) as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+    if not as_json:
+        click.echo(f"{email} added as watcher to {key}")
+    else:
+        _json({"key": key, "watcher": email})
 
 
 @jira.command("link")

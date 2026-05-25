@@ -323,6 +323,12 @@ def jira_assign(key: str, email: str) -> None:
     _jira("PUT", f"issue/{key}/assignee", json={"accountId": user["accountId"]})
 
 
+def jira_watch(key: str, email: str) -> None:
+    """Add a watcher to a Jira issue by email."""
+    user = jira_find_user(email)
+    _jira("POST", f"issue/{key}/watchers", json=user["accountId"])
+
+
 def jira_projects(limit: int = 50) -> list[dict]:
     """List Jira projects."""
     r = _jira("GET", "project/search", params={"maxResults": limit})
