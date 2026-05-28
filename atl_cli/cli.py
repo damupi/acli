@@ -166,6 +166,9 @@ def jira_view(key, as_json):
             click.echo(f"  {line}")
 
 
+jira.add_command(jira_view, name="issue")
+
+
 @jira.command("search")
 @click.option("--jql", required=True, help="JQL query string")
 @click.option("--limit", default=20, show_default=True, help="Max results to return")
