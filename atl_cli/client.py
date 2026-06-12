@@ -124,10 +124,11 @@ def _markdown_to_adf(text: str) -> dict:
     * ``_italic_`` — em mark
     * `` `code` `` (inline) — code mark
     * Fenced code blocks (``` ... ```) — codeBlock node
+    * Pipe tables (``| col | col |``) — table node with header row
     * Blank-line-separated text — separate paragraph nodes
 
-    Inline marks (**bold**, _italic_, `code`) are also parsed inside headings
-    and list items.
+    Inline marks (**bold**, _italic_, `code`) are also parsed inside headings,
+    list items, and table cells.
 
     Args:
         text: A markdown-formatted string.
@@ -195,6 +196,42 @@ def _markdown_to_adf(text: str) -> dict:
             content.append({"type": "bulletList", "content": list_items})
             continue
 
+        # ── markdown table ────────────────────────────────────────────────────
+        if re.match(r"^\|", line):
+            table_lines: list[str] = []
+            while i < len(lines) and re.match(r"^\|", lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+
+            def _parse_row(row_line: str) -> list[str]:
+                parts = row_line.split("|")
+                return [p.strip() for p in parts[1:-1]]
+
+            # Drop separator rows (|---|---|  or  |:---|:---:|)
+            data_rows = [r for r in table_lines if not re.match(r"^\|[\s\-:|]+\|", r)]
+
+            if data_rows:
+                adf_rows: list[dict] = []
+                for row_idx, row_line in enumerate(data_rows):
+                    is_header = row_idx == 0
+                    cell_type = "tableHeader" if is_header else "tableCell"
+                    row_cells: list[dict] = []
+                    for cell_text in _parse_row(row_line):
+                        cell: dict = {
+                            "type": cell_type,
+                            "content": [{"type": "paragraph", "content": _inline_adf(cell_text)}],
+                        }
+                        if is_header:
+                            cell["attrs"] = {"background": "#F3F3F3"}
+                        row_cells.append(cell)
+                    adf_rows.append({"type": "tableRow", "content": row_cells})
+                content.append({
+                    "type": "table",
+                    "attrs": {"layout": "default"},
+                    "content": adf_rows,
+                })
+            continue
+
         # ── blank line — paragraph separator, skip ────────────────────────────
         if line.strip() == "":
             i += 1
@@ -208,6 +245,7 @@ def _markdown_to_adf(text: str) -> dict:
             and not lines[i].strip().startswith("```")
             and not re.match(r"^(#{1,3})\s+", lines[i])
             and not re.match(r"^[-*]\s+", lines[i])
+            and not re.match(r"^\|", lines[i])
         ):
             para_lines.append(lines[i])
             i += 1
