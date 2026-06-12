@@ -204,8 +204,9 @@ def _markdown_to_adf(text: str) -> dict:
                 i += 1
 
             def _parse_row(row_line: str) -> list[str]:
-                parts = row_line.split("|")
-                return [p.strip() for p in parts[1:-1]]
+                # Split on | not preceded by \ to allow \| inside cell content
+                parts = re.split(r"(?<!\\)\|", row_line)
+                return [p.strip().replace(r"\|", "|") for p in parts[1:-1]]
 
             # Drop separator rows (|---|---|  or  |:---|:---:|)
             data_rows = [r for r in table_lines if not re.match(r"^\|[\s\-:|]+\|", r)]
