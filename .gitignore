@@ -19,3 +19,6 @@ env/
 
 # macOS
 .DS_Store
+
+# Local docs (not tracked in git)
+docs/
