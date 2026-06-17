@@ -529,3 +529,35 @@ def confluence_recent(limit: int = 15) -> list[dict]:
     """Return pages recently modified by the current user."""
     cql = "contributor = currentUser() ORDER BY lastModified DESC"
     return confluence_search(cql, limit=limit)
+
+
+# ── Confluence — Page comments ────────────────────────────────────────────────
+
+def confluence_page_comments(page_id: str, limit: int = 50) -> list[dict]:
+    """List inline and footer comments on a Confluence page."""
+    r = _confluence(
+        "GET",
+        f"/wiki/rest/api/content/{page_id}/child/comment",
+        params={
+            "expand": "body.storage,version,history.createdBy",
+            "limit": limit,
+        },
+    )
+    return r.json().get("results", [])
+
+
+def confluence_page_comment_add(page_id: str, body: str) -> dict:
+    """Add a footer comment to a Confluence page (plain text or XHTML)."""
+    if not body.lstrip().startswith("<"):
+        body = f"<p>{body}</p>"
+    payload = {
+        "type": "comment",
+        "container": {"id": page_id, "type": "page"},
+        "body": {
+            "storage": {
+                "value": body,
+                "representation": "storage",
+            }
+        },
+    }
+    return _confluence("POST", "/wiki/rest/api/content", json=payload).json()

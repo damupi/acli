@@ -1,10 +1,13 @@
 import json
+import re
 import sys
 
 import click
 
 from .auth import CREDS_PATH, load_credentials, save_credentials
 from .client import (
+    confluence_page_comment_add,
+    confluence_page_comments,
     confluence_page_create,
     confluence_page_get,
     confluence_page_update,
@@ -710,3 +713,57 @@ def confluence_page_update_cmd(page_id, title, body, file, as_json):
     click.echo(f"Updated page: {page_id}")
     click.echo(f"Title:   {title}")
     click.echo(f"Version: {new_version}")
+
+
+@confluence_page.command("comments")
+@click.argument("page_id")
+@click.option("--limit", default=50, show_default=True, help="Max comments to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_page_comments_cmd(page_id, limit, as_json):
+    """List comments on a Confluence page.
+
+    \b
+    PAGE_ID is the numeric page ID.
+    """
+    comments = confluence_page_comments(page_id, limit=limit)
+    if as_json:
+        _json(comments)
+        return
+    if not comments:
+        click.echo(f"No comments on page {page_id}.")
+        return
+    click.echo(f"{len(comments)} comment(s) on page {page_id}:\n")
+    for c in comments:
+        author = (c.get("history", {}).get("createdBy") or {}).get("displayName", "Unknown")
+        created = (c.get("history", {}).get("createdDate", "") or "")[:10]
+        comment_id = c.get("id", "?")
+        body_val = (c.get("body", {}).get("storage", {}) or {}).get("value", "")
+        body_text = re.sub(r"<[^>]+>", "", body_val).strip()
+        click.echo(f"── [{comment_id}] {author}  {created}")
+        for line in body_text.splitlines():
+            if line.strip():
+                click.echo(f"   {line}")
+        click.echo()
+
+
+@confluence_page.command("comment")
+@click.argument("page_id")
+@click.argument("text", default="")
+@click.option("--file", "file", default=None, help="Read comment body from a file (plain text or XHTML)")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def confluence_page_comment_cmd(page_id, text, file, as_json):
+    """Add a comment to a Confluence page.
+
+    \b
+    PAGE_ID is the numeric page ID.
+    TEXT is the comment body (plain text), or use --file for XHTML.
+    """
+    body = _read_body(text or None, file)
+    if not body:
+        click.echo("Provide comment text as argument or via --file.", err=True)
+        sys.exit(1)
+    result = confluence_page_comment_add(page_id, body)
+    if as_json:
+        _json(result)
+        return
+    click.echo(f"Comment added to page {page_id} (id: {result.get('id', '?')})")
