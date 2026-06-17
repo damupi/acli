@@ -301,6 +301,7 @@ def jira_create(
     reporter_email: str | None = None,
     priority: str | None = None,
     labels: list[str] | None = None,
+    custom_fields: dict | None = None,
 ) -> dict:
     """Create a new Jira issue."""
     fields: dict = {
@@ -320,6 +321,8 @@ def jira_create(
         fields["priority"] = {"name": priority}
     if labels:
         fields["labels"] = labels
+    if custom_fields:
+        fields.update(custom_fields)
     return _jira("POST", "issue", json={"fields": fields}).json()
 
 
@@ -380,6 +383,7 @@ def jira_update(
     description: str | None = None,
     priority: str | None = None,
     labels: list[str] | None = None,
+    custom_fields: dict | None = None,
 ) -> None:
     """Update fields on an existing Jira issue using PUT /rest/api/3/issue/{key}."""
     fields: dict = {}
@@ -391,6 +395,8 @@ def jira_update(
         fields["priority"] = {"name": priority}
     if labels is not None:
         fields["labels"] = labels
+    if custom_fields:
+        fields.update(custom_fields)
     if not fields:
         raise ValueError("No fields specified to update.")
     _jira("PUT", f"issue/{key}", json={"fields": fields})

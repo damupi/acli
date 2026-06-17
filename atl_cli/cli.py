@@ -61,6 +61,24 @@ def _read_body(body: str | None, file: str | None) -> str | None:
     return body
 
 
+def _parse_custom_field(raw: str) -> tuple[str, object]:
+    """Parse KEY=VALUE. VALUE is decoded as JSON if valid, else plain string."""
+    if "=" not in raw:
+        raise click.BadParameter(
+            f"Must be KEY=VALUE, got: {raw!r}", param_hint="--custom-field"
+        )
+    key, _, value = raw.partition("=")
+    key = key.strip()
+    if not key:
+        raise click.BadParameter(
+            f"Key cannot be empty, got: {raw!r}", param_hint="--custom-field"
+        )
+    try:
+        return key, json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        return key, value
+
+
 # ── CLI Root ──────────────────────────────────────────────────────────────────
 
 @click.group()
@@ -165,6 +183,26 @@ def jira_view(key, as_json):
         for line in description.splitlines():
             click.echo(f"  {line}")
 
+    custom_entries = {k: v for k, v in fields.items() if k.startswith("customfield_") and v is not None}
+    if custom_entries:
+        click.echo("\nCustom Fields:")
+        for cf_key, cf_val in sorted(custom_entries.items()):
+            if isinstance(cf_val, dict):
+                if cf_val.get("type") == "doc":
+                    text = _adf_to_text(cf_val)
+                    display = (text[:80] + "…") if len(text) > 80 else text
+                else:
+                    display = cf_val.get("value") or cf_val.get("name") or cf_val.get("displayName") or json.dumps(cf_val)
+            elif isinstance(cf_val, list):
+                display = ", ".join(
+                    (i.get("value") or i.get("name") or str(i)) if isinstance(i, dict) else str(i)
+                    for i in cf_val
+                ) if cf_val else ""
+            else:
+                display = str(cf_val)
+            if display:
+                click.echo(f"  {cf_key}: {display}")
+
 
 jira.add_command(jira_view, name="issue")
 
@@ -208,12 +246,15 @@ def jira_search_cmd(jql, limit, fields, as_json):
 @click.option("--reporter", default=None, help="Reporter email address")
 @click.option("--priority", default=None, help="Priority (e.g. High, Medium, Low)")
 @click.option("--label", "labels", default=None, help="Comma-separated labels (e.g. bug,cli)")
+@click.option("--custom-field", "raw_custom_fields", multiple=True, metavar="KEY=VALUE",
+              help="Custom field in KEY=VALUE form (repeatable). VALUE is parsed as JSON if valid.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_create_cmd(project, issuetype, summary, description, description_file,
-                    assignee, reporter, priority, labels, as_json):
+                    assignee, reporter, priority, labels, raw_custom_fields, as_json):
     """Create a new Jira issue."""
     desc = _read_body(description, description_file)
     label_list = [l.strip() for l in labels.split(",")] if labels else []
+    custom_fields = dict(_parse_custom_field(f) for f in raw_custom_fields) if raw_custom_fields else None
     issue = jira_create(
         project=project,
         issuetype=issuetype,
@@ -223,6 +264,7 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
         reporter_email=reporter,
         priority=priority,
         labels=label_list,
+        custom_fields=custom_fields,
     )
     if as_json:
         _json(issue)
@@ -241,12 +283,15 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
 @click.option("--description-file", "description_file", default=None, help="Read description from a markdown file")
 @click.option("--priority", default=None, help="New priority (e.g. High, Medium, Low)")
 @click.option("--label", "labels", default=None, help="Comma-separated labels (replaces existing)")
+@click.option("--custom-field", "raw_custom_fields", multiple=True, metavar="KEY=VALUE",
+              help="Custom field in KEY=VALUE form (repeatable). VALUE is parsed as JSON if valid.")
 @click.option("--json", "as_json", is_flag=True)
-def jira_update_cmd(key, summary, description, description_file, priority, labels, as_json):
+def jira_update_cmd(key, summary, description, description_file, priority, labels, raw_custom_fields, as_json):
     """Update fields on an existing Jira issue."""
     desc = _read_body(description, description_file)
     label_list = [l.strip() for l in labels.split(",")] if labels else None
-    jira_update(key, summary=summary, description=desc, priority=priority, labels=label_list)
+    custom_fields = dict(_parse_custom_field(f) for f in raw_custom_fields) if raw_custom_fields else None
+    jira_update(key, summary=summary, description=desc, priority=priority, labels=label_list, custom_fields=custom_fields)
     if as_json:
         _json({"key": key, "updated": True})
     else:
