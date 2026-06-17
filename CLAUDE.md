@@ -15,6 +15,8 @@ acli/
 │   ├── auth.py       # Credential storage, load/save helpers
 │   ├── client.py     # HTTP client — all Jira and Confluence API calls
 │   └── cli.py        # Click CLI commands
+└── docs/             # Local notes — gitignored, not committed
+    └── todo.md       # Improvement backlog (known gaps and missing features)
 ```
 
 ## Setup
