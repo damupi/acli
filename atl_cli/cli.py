@@ -16,6 +16,7 @@ from .client import (
     jira_comment,
     jira_comment_delete,
     jira_comment_update,
+    jira_comments,
     jira_create,
     jira_find_user,
     jira_get,
@@ -319,6 +320,37 @@ def jira_comment_cmd(key, text, file, as_json):
         _json(result)
         return
     click.echo(f"Comment added to {key} (id: {result.get('id', '?')})")
+
+
+@jira.command("comments")
+@click.argument("key")
+@click.option("--limit", default=50, show_default=True, help="Max comments to return")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_comments_cmd(key, limit, as_json):
+    """List comments on a Jira issue.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-123
+    """
+    comments = jira_comments(key, limit=limit)
+    if as_json:
+        _json(comments)
+        return
+    if not comments:
+        click.echo(f"No comments on {key}.")
+        return
+    click.echo(f"{len(comments)} comment(s) on {key}:\n")
+    for c in comments:
+        author = (c.get("author") or {}).get("displayName", "Unknown")
+        created = c.get("created", "")[:10]
+        updated = c.get("updated", "")[:10]
+        comment_id = c.get("id", "?")
+        body_text = _adf_to_text(c.get("body"))
+        edited = f"  [edited {updated}]" if updated and updated != created else ""
+        click.echo(f"── [{comment_id}] {author}  {created}{edited}")
+        for line in body_text.splitlines():
+            click.echo(f"   {line}")
+        click.echo()
 
 
 @jira.command("comment-update")

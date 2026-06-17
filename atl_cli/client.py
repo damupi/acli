@@ -337,6 +337,12 @@ def jira_search(jql: str, fields: list[str] | None = None, limit: int = 20) -> l
     return r.json().get("issues", [])
 
 
+def jira_comments(key: str, limit: int = 50) -> list[dict]:
+    """Fetch comments on a Jira issue."""
+    r = _jira("GET", f"issue/{key}/comment", params={"maxResults": limit, "orderBy": "created"})
+    return r.json().get("comments", [])
+
+
 def jira_comment(key: str, body: str) -> dict:
     """Add a comment to a Jira issue."""
     payload = {"body": _markdown_to_adf(body)}

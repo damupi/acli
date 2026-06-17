@@ -69,6 +69,7 @@ atl auth status                                   # verify live session
 atl jira view KEY                                 # view issue details
 atl jira search --jql "..." [--limit 20]          # search with JQL
 atl jira create --project X --summary "..."       # create an issue
+atl jira comments KEY [--limit 50]                # list comments on an issue
 atl jira comment KEY "text"                       # add a comment
 atl jira transition KEY --status "In Progress"    # change issue status
 atl jira assign KEY --to email                    # reassign issue
@@ -101,6 +102,7 @@ Base URL: `https://{domain}/rest/api/3/`
 | `myself` | GET | Verify credentials, get own account info |
 | `issue/{key}` | GET | Fetch a single issue |
 | `issue` | POST | Create a new issue |
+| `issue/{key}/comment` | GET | List comments on an issue |
 | `issue/{key}/comment` | POST | Add a comment |
 | `issue/{key}/transitions` | GET | List available transitions |
 | `issue/{key}/transitions` | POST | Perform a transition |
