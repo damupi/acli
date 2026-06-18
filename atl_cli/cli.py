@@ -21,8 +21,10 @@ from .client import (
     jira_comment_update,
     jira_comments,
     jira_create,
+    jira_fields,
     jira_find_user,
     jira_get,
+    jira_issue_types,
     jira_search_users,
     jira_link_issues,
     jira_myself,
@@ -517,6 +519,81 @@ def jira_projects_cmd(limit, as_json):
         name = p.get("name", "?")
         ptype = p.get("projectTypeKey", "?")
         click.echo(f"{key:<16}  {ptype:<12}  {name}")
+
+
+@jira.command("issue-types")
+@click.argument("project")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_issue_types_cmd(project, as_json):
+    """List issue types available for a project.
+
+    \b
+    PROJECT is the project key, e.g. GDCU
+    """
+    types = jira_issue_types(project)
+    if as_json:
+        _json(types)
+        return
+    if not types:
+        click.echo(f"No issue types found for {project}.")
+        return
+    for t in types:
+        subtask = "  [subtask]" if t.get("subtask") else ""
+        click.echo(f"{t.get('id', '?'):<6}  {t.get('name', '?')}{subtask}")
+
+
+@jira.command("fields")
+@click.argument("project")
+@click.option("--type", "issuetype", default=None, help="Filter to a specific issue type (e.g. Task, Story)")
+@click.option("--required", "required_only", is_flag=True, help="Show only required fields")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_fields_cmd(project, issuetype, required_only, as_json):
+    """Show fields available when creating an issue.
+
+    \b
+    PROJECT is the project key, e.g. GDCU
+    Use --type to filter by issue type and --required to see only required fields.
+
+    \b
+    Examples:
+      atl jira fields GDCU --required
+      atl jira fields GDCU --type Task
+      atl jira fields GDCU --type Story --required
+    """
+    fields = jira_fields(project, issuetype=issuetype, required_only=required_only)
+    if as_json:
+        _json(fields)
+        return
+    if not fields:
+        msg = f"No fields found for {project}"
+        if issuetype:
+            msg += f" / {issuetype}"
+        click.echo(msg + ".")
+        return
+
+    # Group by issue type when not filtered
+    from itertools import groupby
+    key_fn = lambda f: f["issuetype"]
+    grouped = groupby(sorted(fields, key=key_fn), key=key_fn)
+    for itype_name, itype_fields in grouped:
+        click.echo(f"\n── {itype_name} ──")
+        for f in sorted(itype_fields, key=lambda x: (not x["required"], x["name"])):
+            req = "* " if f["required"] else "  "
+            schema_type = f.get("schema", {}).get("type", "")
+            allowed = f.get("allowedValues", [])
+            allowed_str = ""
+            if allowed:
+                values = [
+                    v.get("value") or v.get("name") or str(v)
+                    for v in allowed[:6]
+                ]
+                allowed_str = "  [" + ", ".join(values)
+                if len(allowed) > 6:
+                    allowed_str += f", +{len(allowed) - 6} more"
+                allowed_str += "]"
+            click.echo(f"  {req}{f['id']:<28}  {f['name']:<30}  {schema_type}{allowed_str}")
+    click.echo()
+    click.echo("  * = required field")
 
 
 # ── confluence ────────────────────────────────────────────────────────────────
