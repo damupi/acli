@@ -28,6 +28,8 @@ from .client import (
     jira_search_users,
     jira_link_issues,
     jira_myself,
+    jira_sprint_find,
+    jira_sprints_list,
     jira_unwatch,
     jira_watch,
     jira_watchers_list,
@@ -258,18 +260,20 @@ def jira_search_cmd(jql, limit, fields, as_json):
               help="Add a watcher by email (repeatable).")
 @click.option("--link", "raw_links", multiple=True, metavar="TYPE:KEY",
               help='Link to another issue, e.g. "relates to:GDCU-123" (repeatable).')
+@click.option("--sprint", default=None, help='Sprint name, e.g. "GDCU Sprint13Q2" (partial match accepted).')
 @click.option("--custom-field", "raw_custom_fields", multiple=True, metavar="KEY=VALUE",
               help="Custom field in KEY=VALUE form (repeatable). VALUE is parsed as JSON if valid.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_create_cmd(project, issuetype, summary, description, description_file,
                     assignee, reporter, priority, labels, watchers, raw_links,
-                    raw_custom_fields, as_json):
+                    sprint, raw_custom_fields, as_json):
     """Create a new Jira issue.
 
     \b
     Examples:
       atl jira create --project GDCU --summary "Fix login bug" --watcher mike@example.com
       atl jira create --project GDCU --summary "New task" --link "relates to:GDCU-123"
+      atl jira create --project GDCU --summary "Sprint work" --sprint "Sprint13Q2"
     """
     desc = _read_body(description, description_file)
     label_list = [l.strip() for l in labels.split(",")] if labels else []
@@ -285,19 +289,24 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
         link_type, _, target_key = raw.partition(":")
         links.append((link_type.strip(), target_key.strip()))
 
-    issue = jira_create(
-        project=project,
-        issuetype=issuetype,
-        summary=summary,
-        description=desc,
-        assignee_email=assignee,
-        reporter_email=reporter,
-        priority=priority,
-        labels=label_list,
-        custom_fields=custom_fields,
-        watcher_emails=list(watchers) or None,
-        links=links or None,
-    )
+    try:
+        issue = jira_create(
+            project=project,
+            issuetype=issuetype,
+            summary=summary,
+            description=desc,
+            assignee_email=assignee,
+            reporter_email=reporter,
+            priority=priority,
+            labels=label_list,
+            custom_fields=custom_fields,
+            watcher_emails=list(watchers) or None,
+            links=links or None,
+            sprint=sprint,
+        )
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
     if as_json:
         _json(issue)
         return
@@ -306,6 +315,8 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
     url = f"https://{creds['domain']}/browse/{key}"
     click.echo(f"Created: {key}")
     click.echo(f"URL:     {url}")
+    if sprint:
+        click.echo(f"Sprint:  {sprint}")
     if watchers:
         click.echo(f"Watchers: {', '.join(watchers)}")
     if links:
@@ -320,15 +331,21 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
 @click.option("--description-file", "description_file", default=None, help="Read description from a markdown file")
 @click.option("--priority", default=None, help="New priority (e.g. High, Medium, Low)")
 @click.option("--label", "labels", default=None, help="Comma-separated labels (replaces existing)")
+@click.option("--sprint", default=None, help='Sprint name, e.g. "GDCU Sprint13Q2" (partial match accepted).')
 @click.option("--custom-field", "raw_custom_fields", multiple=True, metavar="KEY=VALUE",
               help="Custom field in KEY=VALUE form (repeatable). VALUE is parsed as JSON if valid.")
 @click.option("--json", "as_json", is_flag=True)
-def jira_update_cmd(key, summary, description, description_file, priority, labels, raw_custom_fields, as_json):
+def jira_update_cmd(key, summary, description, description_file, priority, labels, sprint, raw_custom_fields, as_json):
     """Update fields on an existing Jira issue."""
     desc = _read_body(description, description_file)
     label_list = [l.strip() for l in labels.split(",")] if labels else None
     custom_fields = dict(_parse_custom_field(f) for f in raw_custom_fields) if raw_custom_fields else None
-    jira_update(key, summary=summary, description=desc, priority=priority, labels=label_list, custom_fields=custom_fields)
+    try:
+        jira_update(key, summary=summary, description=desc, priority=priority, labels=label_list,
+                    custom_fields=custom_fields, sprint=sprint)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
     if as_json:
         _json({"key": key, "updated": True})
     else:
@@ -600,6 +617,40 @@ def jira_projects_cmd(limit, as_json):
         name = p.get("name", "?")
         ptype = p.get("projectTypeKey", "?")
         click.echo(f"{key:<16}  {ptype:<12}  {name}")
+
+
+@jira.command("sprints")
+@click.argument("project")
+@click.option("--state", default="active,future", show_default=True,
+              help="Sprint state filter: active, future, closed, or comma-separated combination.")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_sprints_cmd(project, state, as_json):
+    """List sprints for a project.
+
+    \b
+    PROJECT is the project key, e.g. GDCU
+
+    \b
+    Examples:
+      atl jira sprints GDCU
+      atl jira sprints GDCU --state active
+      atl jira sprints GDCU --state closed --json
+    """
+    try:
+        sprints = jira_sprints_list(project, state=state)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        raise SystemExit(1)
+    if as_json:
+        _json(sprints)
+        return
+    if not sprints:
+        click.echo(f"No sprints found for {project} (state: {state}).")
+        return
+    for sp in sprints:
+        start = sp.get("startDate", "")[:10]
+        end = sp.get("endDate", "")[:10]
+        click.echo(f"{sp['id']:<8}  {sp['state']:<8}  {sp['name']:<30}  {start} → {end}")
 
 
 @jira.command("issue-types")
