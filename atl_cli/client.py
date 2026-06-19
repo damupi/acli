@@ -302,8 +302,14 @@ def jira_create(
     priority: str | None = None,
     labels: list[str] | None = None,
     custom_fields: dict | None = None,
+    watcher_emails: list[str] | None = None,
+    links: list[tuple[str, str]] | None = None,
 ) -> dict:
-    """Create a new Jira issue."""
+    """Create a new Jira issue.
+
+    watcher_emails: list of email addresses to add as watchers after creation.
+    links: list of (link_type, target_key) tuples to create after creation.
+    """
     fields: dict = {
         "project": {"key": project},
         "issuetype": {"name": issuetype},
@@ -323,7 +329,14 @@ def jira_create(
         fields["labels"] = labels
     if custom_fields:
         fields.update(custom_fields)
-    return _jira("POST", "issue", json={"fields": fields}).json()
+    issue = _jira("POST", "issue", json={"fields": fields}).json()
+    key = issue.get("key")
+    if key:
+        for email in (watcher_emails or []):
+            jira_watch(key, email)
+        for link_type, target_key in (links or []):
+            jira_link_issues(key, target_key, link_type)
+    return issue
 
 
 def jira_search(jql: str, fields: list[str] | None = None, limit: int = 20) -> list[dict]:
@@ -371,10 +384,22 @@ def jira_assign(key: str, email: str) -> None:
     _jira("PUT", f"issue/{key}/assignee", json={"accountId": user["accountId"]})
 
 
+def jira_watchers_list(key: str) -> list[dict]:
+    """Return all watchers on a Jira issue."""
+    r = _jira("GET", f"issue/{key}/watchers")
+    return r.json().get("watchers", [])
+
+
 def jira_watch(key: str, email: str) -> None:
     """Add a watcher to a Jira issue by email."""
     user = jira_find_user(email)
     _jira("POST", f"issue/{key}/watchers", json=user["accountId"])
+
+
+def jira_unwatch(key: str, email: str) -> None:
+    """Remove a watcher from a Jira issue by email."""
+    user = jira_find_user(email)
+    _jira("DELETE", f"issue/{key}/watchers", params={"accountId": user["accountId"]})
 
 
 def jira_projects(limit: int = 50) -> list[dict]:
