@@ -28,7 +28,9 @@ from .client import (
     jira_search_users,
     jira_link_issues,
     jira_myself,
+    jira_unwatch,
     jira_watch,
+    jira_watchers_list,
     jira_projects,
     jira_search,
     jira_transition,
@@ -252,15 +254,37 @@ def jira_search_cmd(jql, limit, fields, as_json):
 @click.option("--reporter", default=None, help="Reporter email address")
 @click.option("--priority", default=None, help="Priority (e.g. High, Medium, Low)")
 @click.option("--label", "labels", default=None, help="Comma-separated labels (e.g. bug,cli)")
+@click.option("--watcher", "watchers", multiple=True, metavar="EMAIL",
+              help="Add a watcher by email (repeatable).")
+@click.option("--link", "raw_links", multiple=True, metavar="TYPE:KEY",
+              help='Link to another issue, e.g. "relates to:GDCU-123" (repeatable).')
 @click.option("--custom-field", "raw_custom_fields", multiple=True, metavar="KEY=VALUE",
               help="Custom field in KEY=VALUE form (repeatable). VALUE is parsed as JSON if valid.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_create_cmd(project, issuetype, summary, description, description_file,
-                    assignee, reporter, priority, labels, raw_custom_fields, as_json):
-    """Create a new Jira issue."""
+                    assignee, reporter, priority, labels, watchers, raw_links,
+                    raw_custom_fields, as_json):
+    """Create a new Jira issue.
+
+    \b
+    Examples:
+      atl jira create --project GDCU --summary "Fix login bug" --watcher mike@example.com
+      atl jira create --project GDCU --summary "New task" --link "relates to:GDCU-123"
+    """
     desc = _read_body(description, description_file)
     label_list = [l.strip() for l in labels.split(",")] if labels else []
     custom_fields = dict(_parse_custom_field(f) for f in raw_custom_fields) if raw_custom_fields else None
+
+    links: list[tuple[str, str]] = []
+    for raw in raw_links:
+        if ":" not in raw:
+            raise click.BadParameter(
+                f"Must be TYPE:KEY, e.g. 'relates to:GDCU-123', got: {raw!r}",
+                param_hint="--link",
+            )
+        link_type, _, target_key = raw.partition(":")
+        links.append((link_type.strip(), target_key.strip()))
+
     issue = jira_create(
         project=project,
         issuetype=issuetype,
@@ -271,6 +295,8 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
         priority=priority,
         labels=label_list,
         custom_fields=custom_fields,
+        watcher_emails=list(watchers) or None,
+        links=links or None,
     )
     if as_json:
         _json(issue)
@@ -280,6 +306,11 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
     url = f"https://{creds['domain']}/browse/{key}"
     click.echo(f"Created: {key}")
     click.echo(f"URL:     {url}")
+    if watchers:
+        click.echo(f"Watchers: {', '.join(watchers)}")
+    if links:
+        for link_type, target_key in links:
+            click.echo(f"Linked:  {key} {link_type} {target_key}")
 
 
 @jira.command("update")
@@ -455,6 +486,56 @@ def jira_watch_cmd(key, email, as_json):
         click.echo(f"{email} added as watcher to {key}")
     else:
         _json({"key": key, "watcher": email})
+
+
+@jira.command("watchers")
+@click.argument("key")
+@click.option("--add", "add_email", default=None, help="Add a watcher by email")
+@click.option("--remove", "remove_email", default=None, help="Remove a watcher by email")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_watchers_cmd(key, add_email, remove_email, as_json):
+    """List, add, or remove watchers on a Jira issue.
+
+    \b
+    KEY is the issue key, e.g. GDCU-9110
+
+    \b
+    Examples:
+      atl jira watchers GDCU-9110
+      atl jira watchers GDCU-9110 --add mike@example.com
+      atl jira watchers GDCU-9110 --remove mike@example.com
+    """
+    if add_email and remove_email:
+        click.echo("Use --add or --remove, not both.", err=True)
+        raise SystemExit(1)
+    if add_email:
+        jira_watch(key, add_email)
+        if not as_json:
+            click.echo(f"{add_email} added as watcher to {key}")
+        else:
+            _json({"key": key, "added": add_email})
+        return
+    if remove_email:
+        jira_unwatch(key, remove_email)
+        if not as_json:
+            click.echo(f"{remove_email} removed from watchers on {key}")
+        else:
+            _json({"key": key, "removed": remove_email})
+        return
+    # default: list
+    watchers = jira_watchers_list(key)
+    if as_json:
+        _json(watchers)
+        return
+    if not watchers:
+        click.echo(f"No watchers on {key}.")
+        return
+    click.echo(f"{len(watchers)} watcher(s) on {key}:")
+    for w in watchers:
+        name = w.get("displayName", "?")
+        email = w.get("emailAddress", "")
+        account_id = w.get("accountId", "")
+        click.echo(f"  {name:<30}  {email:<35}  {account_id}")
 
 
 @jira.command("link")
