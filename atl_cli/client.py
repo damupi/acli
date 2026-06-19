@@ -304,11 +304,13 @@ def jira_create(
     custom_fields: dict | None = None,
     watcher_emails: list[str] | None = None,
     links: list[tuple[str, str]] | None = None,
+    sprint: str | None = None,
 ) -> dict:
     """Create a new Jira issue.
 
     watcher_emails: list of email addresses to add as watchers after creation.
     links: list of (link_type, target_key) tuples to create after creation.
+    sprint: sprint name (partial match accepted); resolved to customfield_10010.
     """
     fields: dict = {
         "project": {"key": project},
@@ -321,12 +323,21 @@ def jira_create(
         user = jira_find_user(assignee_email)
         fields["assignee"] = {"accountId": user["accountId"]}
     if reporter_email:
-        user = jira_find_user(reporter_email)
+        try:
+            user = jira_find_user(reporter_email)
+        except ValueError:
+            raise ValueError(
+                f"Could not resolve reporter '{reporter_email}' — "
+                "use 'atl jira users <query>' to find the correct email or name."
+            )
         fields["reporter"] = {"accountId": user["accountId"]}
     if priority:
         fields["priority"] = {"name": priority}
     if labels:
         fields["labels"] = labels
+    if sprint:
+        sp = jira_sprint_find(project, sprint)
+        fields["customfield_10010"] = {"id": sp["id"]}
     if custom_fields:
         fields.update(custom_fields)
     issue = _jira("POST", "issue", json={"fields": fields}).json()
@@ -402,6 +413,79 @@ def jira_unwatch(key: str, email: str) -> None:
     _jira("DELETE", f"issue/{key}/watchers", params={"accountId": user["accountId"]})
 
 
+def jira_sprint_find(project_key: str, sprint_name: str) -> dict:
+    """Find a sprint by name within any scrum board for the given project.
+
+    Returns the sprint dict (id, name, state, startDate, endDate) or raises.
+    Matches case-insensitively; partial matches are accepted if unique.
+    """
+    s, creds = _session()
+    base = f"https://{creds['domain']}/rest/agile/1.0"
+
+    boards_r = s.get(f"{base}/board", params={"projectKeyOrId": project_key, "type": "scrum", "maxResults": 50})
+    if not boards_r.ok:
+        raise RuntimeError(f"Agile API error {boards_r.status_code}: {boards_r.text[:200]}")
+    boards = boards_r.json().get("values", [])
+    if not boards:
+        raise ValueError(f"No scrum board found for project {project_key}")
+
+    needle = sprint_name.lower()
+    matches: list[dict] = []
+    for board in boards:
+        start = 0
+        while True:
+            r = s.get(
+                f"{base}/board/{board['id']}/sprint",
+                params={"state": "active,future,closed", "maxResults": 50, "startAt": start},
+            )
+            if not r.ok:
+                break
+            data = r.json()
+            for sprint in data.get("values", []):
+                if needle in sprint.get("name", "").lower():
+                    matches.append(sprint)
+            if data.get("isLast", True):
+                break
+            start += 50
+
+    if not matches:
+        raise ValueError(f"No sprint matching '{sprint_name}' found in project {project_key}")
+    if len(matches) > 1:
+        names = ", ".join(m["name"] for m in matches)
+        raise ValueError(f"Ambiguous sprint name '{sprint_name}' — matches: {names}")
+    return matches[0]
+
+
+def jira_sprints_list(project_key: str, state: str = "active,future") -> list[dict]:
+    """List sprints for a project's scrum board(s)."""
+    s, creds = _session()
+    base = f"https://{creds['domain']}/rest/agile/1.0"
+
+    boards_r = s.get(f"{base}/board", params={"projectKeyOrId": project_key, "type": "scrum", "maxResults": 50})
+    if not boards_r.ok:
+        raise RuntimeError(f"Agile API error {boards_r.status_code}: {boards_r.text[:200]}")
+    boards = boards_r.json().get("values", [])
+    if not boards:
+        raise ValueError(f"No scrum board found for project {project_key}")
+
+    sprints: list[dict] = []
+    for board in boards:
+        start = 0
+        while True:
+            r = s.get(
+                f"{base}/board/{board['id']}/sprint",
+                params={"state": state, "maxResults": 50, "startAt": start},
+            )
+            if not r.ok:
+                break
+            data = r.json()
+            sprints.extend(data.get("values", []))
+            if data.get("isLast", True):
+                break
+            start += 50
+    return sprints
+
+
 def jira_projects(limit: int = 50) -> list[dict]:
     """List Jira projects."""
     r = _jira("GET", "project/search", params={"maxResults": limit})
@@ -461,6 +545,7 @@ def jira_update(
     priority: str | None = None,
     labels: list[str] | None = None,
     custom_fields: dict | None = None,
+    sprint: str | None = None,
 ) -> None:
     """Update fields on an existing Jira issue using PUT /rest/api/3/issue/{key}."""
     fields: dict = {}
@@ -472,6 +557,11 @@ def jira_update(
         fields["priority"] = {"name": priority}
     if labels is not None:
         fields["labels"] = labels
+    if sprint is not None:
+        # Derive the project key from the issue key (e.g. GDCU-123 → GDCU)
+        project_key = key.split("-")[0]
+        sp = jira_sprint_find(project_key, sprint)
+        fields["customfield_10010"] = {"id": sp["id"]}
     if custom_fields:
         fields.update(custom_fields)
     if not fields:
