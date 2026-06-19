@@ -383,6 +383,52 @@ def jira_projects(limit: int = 50) -> list[dict]:
     return r.json().get("values", [])
 
 
+def jira_issue_types(project_key: str) -> list[dict]:
+    """Return issue types available for a project."""
+    r = _jira(
+        "GET",
+        "issue/createmeta",
+        params={"projectKeys": project_key, "expand": "projects.issuetypes"},
+    )
+    projects = r.json().get("projects", [])
+    if not projects:
+        return []
+    return projects[0].get("issuetypes", [])
+
+
+def jira_fields(project_key: str, issuetype: str | None = None, required_only: bool = False) -> list[dict]:
+    """Return fields for a project (optionally filtered by issue type and required status).
+
+    Each returned dict has: id, name, required, schema, allowedValues.
+    """
+    params = {
+        "projectKeys": project_key,
+        "expand": "projects.issuetypes.fields",
+    }
+    if issuetype:
+        params["issuetypeNames"] = issuetype
+    r = _jira("GET", "issue/createmeta", params=params)
+    projects = r.json().get("projects", [])
+    if not projects:
+        return []
+
+    fields: list[dict] = []
+    for itype in projects[0].get("issuetypes", []):
+        for field_id, field_meta in itype.get("fields", {}).items():
+            if required_only and not field_meta.get("required"):
+                continue
+            allowed = field_meta.get("allowedValues", [])
+            fields.append({
+                "id": field_id,
+                "name": field_meta.get("name", field_id),
+                "required": field_meta.get("required", False),
+                "schema": field_meta.get("schema", {}),
+                "allowedValues": allowed,
+                "issuetype": itype.get("name", "?"),
+            })
+    return fields
+
+
 def jira_update(
     key: str,
     summary: str | None = None,
