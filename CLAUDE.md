@@ -74,6 +74,9 @@ atl jira comment KEY "text"                       # add a comment
 atl jira transition KEY --status "In Progress"    # change issue status
 atl jira assign KEY --to email                    # reassign issue
 atl jira projects [--limit 30]                    # list projects
+atl jira link-web KEY --url URL --title "..."     # attach a remote (web) link
+atl jira link-web KEY --list                      # list remote links
+atl jira link-web KEY --remove ID                 # delete a remote link
 
 # Confluence — Spaces and Search
 atl confluence spaces [--limit 50]               # list spaces
@@ -110,6 +113,9 @@ Base URL: `https://{domain}/rest/api/3/`
 | `search` | GET | JQL search (`?jql=...&maxResults=N`) |
 | `project/search` | GET | List projects |
 | `user/search` | GET | Search users by email or name |
+| `issue/{key}/remotelink` | GET | List remote (web) links on an issue |
+| `issue/{key}/remotelink` | POST | Attach a remote (web) link |
+| `issue/{key}/remotelink/{linkId}` | DELETE | Remove a remote link |
 
 ### Confluence REST API
 
@@ -165,3 +171,11 @@ Jira v3 requires an `accountId` (not an email or display name) for
 Jira transition IDs vary by project and workflow configuration. `jira_transition()`
 always looks them up dynamically by calling `GET /rest/api/3/issue/{key}/transitions`
 and matching by `t["to"]["name"]` (case-insensitive).
+
+### Remote links are idempotent via globalId
+
+`jira_add_remote_link()` auto-derives a `globalId` (e.g.
+`appId=confluence-page&pageId=6662128093`) when the URL matches a Confluence
+page pattern. Re-POSTing with the same `globalId` updates the existing remote
+link instead of creating a duplicate — useful for re-running `atl jira
+link-web` after editing a linked doc.
