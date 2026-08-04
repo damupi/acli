@@ -26,7 +26,10 @@ from .client import (
     jira_get,
     jira_issue_types,
     jira_search_users,
+    jira_add_remote_link,
     jira_link_issues,
+    jira_remote_link_delete,
+    jira_remote_links,
     jira_myself,
     jira_sprint_find,
     jira_sprints_list,
@@ -571,6 +574,65 @@ def jira_link_cmd(key, target_key, link_type, as_json):
         _json({"inward": key, "outward": target_key, "type": link_type})
     else:
         click.echo(f"Linked {key} -> {target_key} ({link_type})")
+
+
+@jira.command("link-web")
+@click.argument("key")
+@click.option("--url", default=None, help="URL of the remote item to link (web page, Confluence page, etc.)")
+@click.option("--title", default=None, help="Title to display for the linked item")
+@click.option("--summary", default=None, help="Optional summary text for the linked item")
+@click.option("--relationship", default="relates to", show_default=True, help="Relationship label shown in the Links panel")
+@click.option("--list", "list_links", is_flag=True, help="List existing remote links on the issue")
+@click.option("--remove", "remove_id", default=None, help="Delete a remote link by id")
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_link_web_cmd(key, url, title, summary, relationship, list_links, remove_id, as_json):
+    """Attach or manage remote (web) links on a Jira issue's Links panel.
+
+    \b
+    KEY is the issue key, e.g. WEBDATA-998
+
+    \b
+    Examples:
+      atl jira link-web WEBDATA-998 --url "https://example.com/doc" --title "Design doc"
+      atl jira link-web WEBDATA-998 --list
+      atl jira link-web WEBDATA-998 --remove 10001
+    """
+    if list_links:
+        links = jira_remote_links(key)
+        if as_json:
+            _json(links)
+            return
+        if not links:
+            click.echo(f"No remote links on {key}.")
+            return
+        click.echo(f"{len(links)} remote link(s) on {key}:\n")
+        for link in links:
+            obj = link.get("object", {})
+            link_id = link.get("id", "?")
+            link_title = obj.get("title", "?")
+            link_url = obj.get("url", "?")
+            click.echo(f"[{link_id}] {link_title}")
+            click.echo(f"      {link_url}")
+        return
+
+    if remove_id:
+        click.confirm(f"Delete remote link {remove_id} from {key}? This cannot be undone.", abort=True)
+        jira_remote_link_delete(key, remove_id)
+        if as_json:
+            _json({"key": key, "link_id": remove_id, "deleted": True})
+        else:
+            click.echo(f"Remote link {remove_id} deleted from {key}.")
+        return
+
+    if not url or not title:
+        click.echo("Provide --url and --title to create a remote link (or use --list / --remove).", err=True)
+        sys.exit(1)
+
+    result = jira_add_remote_link(key, url, title, summary=summary, relationship=relationship)
+    if as_json:
+        _json(result)
+    else:
+        click.echo(f"Linked {url} to {key} (id: {result.get('id', '?')})")
 
 
 @jira.command("users")
