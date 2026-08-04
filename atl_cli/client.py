@@ -580,6 +580,58 @@ def jira_comment_delete(key: str, comment_id: str) -> None:
     _jira("DELETE", f"issue/{key}/comment/{comment_id}")
 
 
+_CONFLUENCE_PAGE_RE = re.compile(r"/wiki/spaces/[^/]+/pages/(\d+)")
+
+
+def jira_add_remote_link(
+    key: str,
+    url: str,
+    title: str,
+    *,
+    summary: str | None = None,
+    icon_url: str | None = None,
+    relationship: str = "relates to",
+    global_id: str | None = None,
+) -> dict:
+    """Attach a remote (web) link to an issue's Links panel.
+
+    POST /rest/api/3/issue/{key}/remotelink
+
+    If global_id is not provided and url matches a Confluence page URL
+    pattern (/wiki/spaces/.../pages/{pageId}/...), a globalId is
+    auto-derived as "appId=confluence-page&pageId={pageId}" so re-running
+    the command updates the existing remote link instead of creating a
+    duplicate.
+    """
+    if not global_id:
+        m = _CONFLUENCE_PAGE_RE.search(url)
+        if m:
+            global_id = f"appId=confluence-page&pageId={m.group(1)}"
+
+    payload: dict = {
+        "object": {
+            "url": url,
+            "title": title,
+            **({"summary": summary} if summary else {}),
+            **({"icon": {"url16x16": icon_url}} if icon_url else {}),
+        },
+        "relationship": relationship,
+    }
+    if global_id:
+        payload["globalId"] = global_id
+    return _jira("POST", f"issue/{key}/remotelink", json=payload).json()
+
+
+def jira_remote_links(key: str) -> list[dict]:
+    """List remote links on an issue. GET /rest/api/3/issue/{key}/remotelink"""
+    return _jira("GET", f"issue/{key}/remotelink").json()
+
+
+def jira_remote_link_delete(key: str, link_id: str) -> None:
+    """Remove a remote link. DELETE /rest/api/3/issue/{key}/remotelink/{linkId}"""
+    _jira("DELETE", f"issue/{key}/remotelink/{link_id}")
+
+
 def jira_link_issues(inward_key: str, outward_key: str, link_type: str) -> None:
     """Link two issues using POST /rest/api/3/issueLink."""
     payload = {
