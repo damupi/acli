@@ -254,7 +254,7 @@ def jira_search_cmd(jql, limit, fields, as_json):
 @click.option("--type", "issuetype", default="Task", show_default=True, help="Issue type")
 @click.option("--summary", required=True, help="Issue summary / title")
 @click.option("--description", "description", default=None,
-              help="Issue description. Supports Markdown formatting, blockquotes, links, and Jira issue keys.")
+              help="Issue description. Supports Markdown, including '> quote' blockquotes, links, and Jira issue keys.")
 @click.option("--description-file", "description_file", default=None,
               help="Read a Markdown description from a file; bare URLs and Jira issue keys are linked.")
 @click.option("--assignee", default=None, help="Assignee email address")
@@ -333,7 +333,7 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
 @click.argument("key")
 @click.option("--summary", default=None, help="New issue summary / title")
 @click.option("--description", default=None,
-              help="New Markdown description; supports blockquotes, links, and Jira issue keys.")
+              help="New Markdown description; supports '> quote' blockquotes, links, and Jira issue keys.")
 @click.option("--description-file", "description_file", default=None,
               help="Read a Markdown description from a file; bare URLs and Jira issue keys are linked.")
 @click.option("--priority", default=None, help="New priority (e.g. High, Medium, Low)")
@@ -371,6 +371,17 @@ def jira_comment_cmd(key, text, file, as_json):
     \b
     KEY is the issue key, e.g. WEBDATA-123
     TEXT is the comment body (or use --file)
+
+    \b
+    Markdown examples:
+      > quoted text          ADF blockquote
+      https://example.com    automatically linked URL
+      INF-4895               automatically linked Jira issue
+      `INF-4895`             code span, intentionally not linked
+
+    \b
+    Example:
+      atl jira comment WEBDATA-123 "> Will take 48h"
     """
     body = _read_body(text or None, file)
     if not body:
@@ -428,6 +439,17 @@ def jira_comment_update_cmd(key, comment_id, text, file, as_json):
     KEY        is the issue key, e.g. WEBDATA-123
     COMMENT_ID is the numeric comment ID
     TEXT       is the new comment body (or use --file)
+
+    \b
+    Markdown examples:
+      > quoted text          ADF blockquote
+      https://example.com    automatically linked URL
+      INF-4895               automatically linked Jira issue
+      `INF-4895`             code span, intentionally not linked
+
+    \b
+    Example:
+      atl jira comment-update WEBDATA-123 123456 "> Updated estimate"
     """
     body = _read_body(text or None, file)
     if not body:
