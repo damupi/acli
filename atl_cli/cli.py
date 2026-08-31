@@ -253,8 +253,10 @@ def jira_search_cmd(jql, limit, fields, as_json):
 @click.option("--project", required=True, help="Project key (e.g. WEBDATA)")
 @click.option("--type", "issuetype", default="Task", show_default=True, help="Issue type")
 @click.option("--summary", required=True, help="Issue summary / title")
-@click.option("--description", "description", default=None, help="Issue description. Supports markdown: **bold**, _italic_, `code`, # headings, - lists.")
-@click.option("--description-file", "description_file", default=None, help="Read description from a markdown file. Supports bold, italic, headings, lists, inline code.")
+@click.option("--description", "description", default=None,
+              help="Issue description. Supports Markdown formatting, blockquotes, links, and Jira issue keys.")
+@click.option("--description-file", "description_file", default=None,
+              help="Read a Markdown description from a file; bare URLs and Jira issue keys are linked.")
 @click.option("--assignee", default=None, help="Assignee email address")
 @click.option("--reporter", default=None, help="Reporter email address")
 @click.option("--priority", default=None, help="Priority (e.g. High, Medium, Low)")
@@ -330,8 +332,10 @@ def jira_create_cmd(project, issuetype, summary, description, description_file,
 @jira.command("update")
 @click.argument("key")
 @click.option("--summary", default=None, help="New issue summary / title")
-@click.option("--description", default=None, help="New description (markdown)")
-@click.option("--description-file", "description_file", default=None, help="Read description from a markdown file")
+@click.option("--description", default=None,
+              help="New Markdown description; supports blockquotes, links, and Jira issue keys.")
+@click.option("--description-file", "description_file", default=None,
+              help="Read a Markdown description from a file; bare URLs and Jira issue keys are linked.")
 @click.option("--priority", default=None, help="New priority (e.g. High, Medium, Low)")
 @click.option("--label", "labels", default=None, help="Comma-separated labels (replaces existing)")
 @click.option("--sprint", default=None, help='Sprint name, e.g. "GDCU Sprint13Q2" (partial match accepted).')
@@ -358,7 +362,8 @@ def jira_update_cmd(key, summary, description, description_file, priority, label
 @jira.command("comment")
 @click.argument("key")
 @click.argument("text", default="")
-@click.option("--file", "file", default=None, help="Read comment body from a markdown file. Supports bold, italic, headings, lists, inline code, and @[Name](accountId) mentions.")
+@click.option("--file", "file", default=None,
+              help="Read Markdown from a file. Supports blockquotes, bare links, Jira issue keys, and @[Name](accountId) mentions.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_comment_cmd(key, text, file, as_json):
     """Add a comment to a Jira issue.
@@ -413,7 +418,8 @@ def jira_comments_cmd(key, limit, as_json):
 @click.argument("key")
 @click.argument("comment_id")
 @click.argument("text", default="")
-@click.option("--file", "file", default=None, help="Read comment body from a markdown file. Supports bold, italic, headings, lists, inline code, and @[Name](accountId) mentions.")
+@click.option("--file", "file", default=None,
+              help="Read Markdown from a file. Supports blockquotes, bare links, Jira issue keys, and @[Name](accountId) mentions.")
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
 def jira_comment_update_cmd(key, comment_id, text, file, as_json):
     """Edit an existing comment on a Jira issue.
