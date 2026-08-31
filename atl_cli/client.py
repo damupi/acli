@@ -51,17 +51,78 @@ def jira_myself() -> dict:
 # ── ADF helper ────────────────────────────────────────────────────────────────
 
 _INLINE_RE = re.compile(r"(\*\*(.+?)\*\*|(?<!\w)_(.+?)_(?!\w)|`(.+?)`|@\[([^\]]+)\]\(([^)]+)\)|\[([^\]]+)\]\(([^)]+)\))")
+_AUTO_LINK_RE = re.compile(
+    r"https?://[^\s<]+|(?<![A-Za-z0-9-])[A-Z][A-Z0-9]+-\d+(?![A-Za-z0-9-])"
+)
+_URL_TRAILING_PUNCTUATION = ".,;:!?\"'>"
+_URL_BRACKETS = {")": "(", "]": "[", "}": "{"}
 
 
-def _inline_adf(line: str) -> list[dict]:
+def _trim_url(url: str) -> tuple[str, str]:
+    """Split punctuation that is not part of a bare URL from its end."""
+    end = len(url)
+    while end:
+        closing = url[end - 1]
+        if closing in _URL_TRAILING_PUNCTUATION:
+            end -= 1
+            continue
+        if closing in _URL_BRACKETS:
+            opening = _URL_BRACKETS[closing]
+            candidate = url[:end]
+            if candidate.count(closing) > candidate.count(opening):
+                end -= 1
+                continue
+        break
+    return url[:end], url[end:]
+
+
+def _plain_text_adf(text: str, jira_base_url: str | None = None) -> list[dict]:
+    """Convert plain text to ADF nodes, adding links for URLs and Jira keys."""
+    nodes: list[dict] = []
+    cursor = 0
+    for match in _AUTO_LINK_RE.finditer(text):
+        if match.start() > cursor:
+            nodes.append({"type": "text", "text": text[cursor:match.start()]})
+
+        value = match.group(0)
+        if value.startswith(("http://", "https://")):
+            link_text, trailing = _trim_url(value)
+            nodes.append({
+                "type": "text",
+                "text": link_text,
+                "marks": [{"type": "link", "attrs": {"href": link_text}}],
+            })
+            if trailing:
+                nodes.append({"type": "text", "text": trailing})
+        elif jira_base_url:
+            nodes.append({
+                "type": "text",
+                "text": value,
+                "marks": [{
+                    "type": "link",
+                    "attrs": {"href": f"{jira_base_url.rstrip('/')}/browse/{value}"},
+                }],
+            })
+        else:
+            nodes.append({"type": "text", "text": value})
+        cursor = match.end()
+
+    if cursor < len(text):
+        nodes.append({"type": "text", "text": text[cursor:]})
+    return nodes
+
+
+def _inline_adf(line: str, jira_base_url: str | None = None) -> list[dict]:
     """Parse a single line of text into a list of ADF inline text nodes.
 
-    Recognises **bold**, _italic_, `code`, and [label](url) spans. All other
-    text is emitted as plain text nodes. Spans are processed left-to-right;
-    overlapping or nested spans are not supported.
+    Recognises **bold**, _italic_, `code`, [label](url), mentions, bare URLs,
+    and Jira issue keys. Spans are processed left-to-right; overlapping or
+    nested spans are not supported. Jira keys remain plain text when no Jira
+    base URL is supplied.
 
     Args:
         line: A single line of markdown text.
+        jira_base_url: Jira site URL used to build issue links, if available.
 
     Returns:
         A list of ADF text node dicts suitable for use inside a paragraph or
@@ -70,9 +131,10 @@ def _inline_adf(line: str) -> list[dict]:
     nodes: list[dict] = []
     cursor = 0
     for m in _INLINE_RE.finditer(line):
-        # Emit any literal text that precedes this match
+        # Emit any literal text that precedes this match, auto-linking bare URLs
+        # and Jira issue keys without touching protected Markdown spans.
         if m.start() > cursor:
-            nodes.append({"type": "text", "text": line[cursor : m.start()]})
+            nodes.extend(_plain_text_adf(line[cursor:m.start()], jira_base_url))
         raw = m.group(0)
         if raw.startswith("**"):
             nodes.append({
@@ -106,14 +168,14 @@ def _inline_adf(line: str) -> list[dict]:
         cursor = m.end()
     # Remaining literal text after the last match
     if cursor < len(line):
-        nodes.append({"type": "text", "text": line[cursor:]})
+        nodes.extend(_plain_text_adf(line[cursor:], jira_base_url))
     # Guarantee at least one node so callers never receive an empty content list
     if not nodes:
         nodes.append({"type": "text", "text": ""})
     return nodes
 
 
-def _markdown_to_adf(text: str) -> dict:
+def _markdown_to_adf(text: str, jira_base_url: str | None = None) -> dict:
     """Convert a markdown string to Atlassian Document Format (ADF).
 
     Supported markdown elements:
@@ -125,13 +187,17 @@ def _markdown_to_adf(text: str) -> dict:
     * `` `code` `` (inline) — code mark
     * Fenced code blocks (``` ... ```) — codeBlock node
     * Pipe tables (``| col | col |``) — table node with header row
+    * ``> quoted text`` — blockquote node, including quoted paragraphs
+    * Bare HTTP(S) URLs — link marks
+    * Jira issue keys — link marks when ``jira_base_url`` is provided
     * Blank-line-separated text — separate paragraph nodes
 
-    Inline marks (**bold**, _italic_, `code`) are also parsed inside headings,
-    list items, and table cells.
+    Inline marks (**bold**, _italic_, `code`, links, and mentions) are also
+    parsed inside headings, blockquotes, list items, and table cells.
 
     Args:
         text: A markdown-formatted string.
+        jira_base_url: Jira site URL used to build issue links, if available.
 
     Returns:
         A complete ADF document dict with ``type``, ``version``, and
@@ -167,6 +233,36 @@ def _markdown_to_adf(text: str) -> dict:
             i += 1  # skip closing ```
             continue
 
+        # ── blockquote ────────────────────────────────────────────────────────
+        if line.startswith(">"):
+            quoted_lines: list[str] = []
+            while i < len(lines) and lines[i].startswith(">"):
+                quoted_lines.append(re.sub(r"^> ?", "", lines[i]))
+                i += 1
+
+            paragraphs: list[list[str]] = [[]]
+            for quoted_line in quoted_lines:
+                if quoted_line.strip():
+                    paragraphs[-1].append(quoted_line)
+                elif paragraphs[-1]:
+                    paragraphs.append([])
+
+            quote_content = [
+                {
+                    "type": "paragraph",
+                    "content": _inline_adf(" ".join(paragraph), jira_base_url),
+                }
+                for paragraph in paragraphs
+                if paragraph
+            ]
+            if not quote_content:
+                quote_content.append({
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": ""}],
+                })
+            content.append({"type": "blockquote", "content": quote_content})
+            continue
+
         # ── heading ───────────────────────────────────────────────────────────
         heading_match = re.match(r"^(#{1,3})\s+(.*)", line)
         if heading_match:
@@ -175,7 +271,7 @@ def _markdown_to_adf(text: str) -> dict:
             content.append({
                 "type": "heading",
                 "attrs": {"level": level},
-                "content": _inline_adf(heading_text),
+                "content": _inline_adf(heading_text, jira_base_url),
             })
             i += 1
             continue
@@ -189,7 +285,7 @@ def _markdown_to_adf(text: str) -> dict:
                     "type": "listItem",
                     "content": [{
                         "type": "paragraph",
-                        "content": _inline_adf(item_text),
+                        "content": _inline_adf(item_text, jira_base_url),
                     }],
                 })
                 i += 1
@@ -220,7 +316,10 @@ def _markdown_to_adf(text: str) -> dict:
                     for cell_text in _parse_row(row_line):
                         cell: dict = {
                             "type": cell_type,
-                            "content": [{"type": "paragraph", "content": _inline_adf(cell_text)}],
+                            "content": [{
+                                "type": "paragraph",
+                                "content": _inline_adf(cell_text, jira_base_url),
+                            }],
                         }
                         if is_header:
                             cell["attrs"] = {"background": "#F3F3F3"}
@@ -247,6 +346,7 @@ def _markdown_to_adf(text: str) -> dict:
             and not re.match(r"^(#{1,3})\s+", lines[i])
             and not re.match(r"^[-*]\s+", lines[i])
             and not re.match(r"^\|", lines[i])
+            and not lines[i].startswith(">")
         ):
             para_lines.append(lines[i])
             i += 1
@@ -256,7 +356,7 @@ def _markdown_to_adf(text: str) -> dict:
             para_text = " ".join(para_lines)
             content.append({
                 "type": "paragraph",
-                "content": _inline_adf(para_text),
+                "content": _inline_adf(para_text, jira_base_url),
             })
 
     # If nothing was produced (e.g. only blank lines), emit an empty paragraph
@@ -267,6 +367,12 @@ def _markdown_to_adf(text: str) -> dict:
         })
 
     return {"type": "doc", "version": 1, "content": content}
+
+
+def _jira_markdown_to_adf(text: str) -> dict:
+    """Convert Markdown to ADF with issue links for the configured Jira site."""
+    creds = load_credentials()
+    return _markdown_to_adf(text, jira_base_url=f"https://{creds['domain']}")
 
 
 # ── Jira — Users ──────────────────────────────────────────────────────────────
@@ -318,7 +424,7 @@ def jira_create(
         "summary": summary,
     }
     if description:
-        fields["description"] = _markdown_to_adf(description)
+        fields["description"] = _jira_markdown_to_adf(description)
     if assignee_email:
         user = jira_find_user(assignee_email)
         fields["assignee"] = {"accountId": user["accountId"]}
@@ -369,7 +475,7 @@ def jira_comments(key: str, limit: int = 50) -> list[dict]:
 
 def jira_comment(key: str, body: str) -> dict:
     """Add a comment to a Jira issue."""
-    payload = {"body": _markdown_to_adf(body)}
+    payload = {"body": _jira_markdown_to_adf(body)}
     return _jira("POST", f"issue/{key}/comment", json=payload).json()
 
 
@@ -552,7 +658,7 @@ def jira_update(
     if summary is not None:
         fields["summary"] = summary
     if description is not None:
-        fields["description"] = _markdown_to_adf(description)
+        fields["description"] = _jira_markdown_to_adf(description)
     if priority is not None:
         fields["priority"] = {"name": priority}
     if labels is not None:
@@ -571,7 +677,7 @@ def jira_update(
 
 def jira_comment_update(key: str, comment_id: str, body: str) -> dict:
     """Update an existing comment using PUT /rest/api/3/issue/{key}/comment/{commentId}."""
-    payload = {"body": _markdown_to_adf(body)}
+    payload = {"body": _jira_markdown_to_adf(body)}
     return _jira("PUT", f"issue/{key}/comment/{comment_id}", json=payload).json()
 
 
