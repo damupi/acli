@@ -1,6 +1,7 @@
 import json
 import re
 import sys
+from pathlib import Path
 
 import click
 
@@ -16,6 +17,7 @@ from .client import (
     confluence_search,
     confluence_spaces,
     jira_assign,
+    jira_attach_files,
     jira_comment,
     jira_comment_delete,
     jira_comment_update,
@@ -364,8 +366,16 @@ def jira_update_cmd(key, summary, description, description_file, priority, label
 @click.argument("text", default="")
 @click.option("--file", "file", default=None,
               help="Read Markdown from a file. Supports blockquotes, bare links, Jira issue keys, and @[Name](accountId) mentions.")
+@click.option(
+    "--attach",
+    "attachments",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+    metavar="FILE",
+    help="Attach a file after adding the comment (repeatable).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
-def jira_comment_cmd(key, text, file, as_json):
+def jira_comment_cmd(key, text, file, attachments, as_json):
     """Add a comment to a Jira issue.
 
     \b
@@ -380,18 +390,70 @@ def jira_comment_cmd(key, text, file, as_json):
       `INF-4895`             code span, intentionally not linked
 
     \b
-    Example:
+    Examples:
       atl jira comment WEBDATA-123 "> Will take 48h"
+      atl jira comment WEBDATA-123 "See attached" --attach screenshot.png
     """
     body = _read_body(text or None, file)
     if not body:
         click.echo("Provide comment text as argument or via --file.", err=True)
         sys.exit(1)
     result = jira_comment(key, body)
+    try:
+        uploaded = jira_attach_files(key, attachments) if attachments else []
+    except Exception as exc:
+        if as_json:
+            _json({
+                "comment": result,
+                "attachments": [],
+                "attachment_error": str(exc),
+            })
+        else:
+            click.echo(f"Comment added to {key} (id: {result.get('id', '?')})")
+            click.echo(f"Attachment upload failed: {exc}", err=True)
+            click.echo(
+                f"The comment was created. Retry the upload with: atl jira attach {key} FILE",
+                err=True,
+            )
+        raise SystemExit(1)
+
     if as_json:
-        _json(result)
+        _json({"comment": result, "attachments": uploaded} if attachments else result)
         return
     click.echo(f"Comment added to {key} (id: {result.get('id', '?')})")
+    for attachment in uploaded:
+        click.echo(
+            f"Attached: {attachment.get('filename', '?')} "
+            f"(id: {attachment.get('id', '?')})"
+        )
+
+
+@jira.command("attach")
+@click.argument("key")
+@click.argument(
+    "files",
+    nargs=-1,
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path),
+)
+@click.option("--json", "as_json", is_flag=True, help="Output raw JSON")
+def jira_attach_cmd(key, files, as_json):
+    """Attach one or more files to a Jira issue.
+
+    \b
+    Examples:
+      atl jira attach WEBDATA-123 screenshot.png
+      atl jira attach WEBDATA-123 screenshot1.png screenshot2.png
+    """
+    uploaded = jira_attach_files(key, files)
+    if as_json:
+        _json(uploaded)
+        return
+    for attachment in uploaded:
+        click.echo(
+            f"Attached: {attachment.get('filename', '?')} "
+            f"to {key} (id: {attachment.get('id', '?')})"
+        )
 
 
 @jira.command("comments")
