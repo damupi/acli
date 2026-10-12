@@ -1,4 +1,7 @@
 import re
+from contextlib import ExitStack
+from pathlib import Path
+from typing import Sequence
 
 import requests
 
@@ -477,6 +480,38 @@ def jira_comment(key: str, body: str) -> dict:
     """Add a comment to a Jira issue."""
     payload = {"body": _jira_markdown_to_adf(body)}
     return _jira("POST", f"issue/{key}/comment", json=payload).json()
+
+
+def jira_attach_files(key: str, paths: Sequence[str | Path]) -> list[dict]:
+    """Upload one or more files as attachments to a Jira issue."""
+    if not paths:
+        raise ValueError("At least one attachment file is required.")
+
+    resolved_paths = [Path(path) for path in paths]
+    invalid_paths = [str(path) for path in resolved_paths if not path.is_file()]
+    if invalid_paths:
+        raise ValueError(
+            "Attachment file not found or is not a regular file: "
+            + ", ".join(invalid_paths)
+        )
+
+    with ExitStack() as stack:
+        files = [
+            ("file", (path.name, stack.enter_context(path.open("rb"))))
+            for path in resolved_paths
+        ]
+        response = _jira(
+            "POST",
+            f"issue/{key}/attachments",
+            files=files,
+            headers={
+                "X-Atlassian-Token": "no-check",
+                # Remove the session's JSON content type so requests can add
+                # the multipart boundary generated for this upload.
+                "Content-Type": None,
+            },
+        )
+    return response.json()
 
 
 def jira_transition(key: str, status_name: str) -> None:
